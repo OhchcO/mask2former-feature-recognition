@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+.venv/
+.conda/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Training data (too large)
+train/images_png/
+train/masks_png/
+val/images_png/
+val/masks_png/
+train/images/
+train/masks/
+val/images/
+val/masks/
+
+# Model files (too large)
+*.bin
+*.pt
+*.pth
+*.ckpt
+results/models/
+
+# Results and outputs
+results/
+*.png
+!scripts/*.py
+
+# Test data
+test/
+
+# Temp files
+*.tmp
+*.log
+
+# Jupyter
+.ipynb_checkpoints/
