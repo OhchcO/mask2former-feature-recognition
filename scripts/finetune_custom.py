@@ -260,11 +260,11 @@ def run_sanity_check(model, train_loader, val_loader, device):
 
 def finetune():
     model_dir = r"E:\soft\code\Mask2former"
-    train_image_dir = r"E:\soft\code\Mask2former\train\images_png"
-    train_mask_dir = r"E:\soft\code\Mask2former\train\masks_png"
-    val_image_dir = r"E:\soft\code\Mask2former\val\images_png"
-    val_mask_dir = r"E:\soft\code\Mask2former\val\masks_png"
-    save_dir = r"E:\soft\code\Mask2former\results\models\finetuned_model_v3"
+    train_image_dir = r"E:\soft\code\Mask2former\train\train_images_png"
+    train_mask_dir = r"E:\soft\code\Mask2former\train\train_masks_png"
+    val_image_dir = r"E:\soft\code\Mask2former\val\val_images_png"
+    val_mask_dir = r"E:\soft\code\Mask2former\val\val_masks_png"
+    save_dir = r"E:\soft\code\Mask2former\results\models\finetuned_model_v4"
     
     print("=" * 60)
     print("Mask2Former Fine-tuning Script (with Validation)")

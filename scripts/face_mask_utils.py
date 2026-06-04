@@ -5,6 +5,148 @@ import json
 import os
 
 
+def extract_face_masks_from_color_image(image_path, background_color=None, min_area=10):
+    """
+    直接从面ID图提取面掩码（不需要中间JSON文件）
+
+    Args:
+        image_path: 面ID图路径（不同颜色表示不同面）
+        background_color: 背景颜色 (R, G, B)，如果为None则自动检测
+        min_area: 最小面面积（像素数），小于此值的区域将被忽略
+
+    Returns:
+        face_masks: dict, {face_id: mask_info}
+    """
+    # 加载图像
+    image = cv2.imread(image_path)
+    if image is None:
+        raise FileNotFoundError(f"无法加载图像: {image_path}")
+
+    # BGR转RGB
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+    # 获取图像尺寸
+    height, width = image_rgb.shape[:2]
+    print(f"面ID图尺寸: {width} x {height}")
+
+    # 找出所有独特颜色
+    pixels = image_rgb.reshape(-1, 3)
+    unique_colors = np.unique(pixels, axis=0)
+
+    print(f"找到 {len(unique_colors)} 种独特颜色")
+
+    # 自动检测背景颜色（通常是出现次数最多的颜色）
+    if background_color is None:
+        # 统计每种颜色的像素数
+        color_counts = {}
+        for color in unique_colors:
+            mask = np.all(image_rgb == color, axis=2)
+            count = np.sum(mask)
+            color_counts[tuple(color)] = count
+
+        # 找出出现次数最多的颜色作为背景
+        background_color = max(color_counts, key=color_counts.get)
+        print(f"自动检测背景颜色: RGB{background_color}")
+
+    # 提取每个面
+    face_masks = {}
+    face_id = 1
+
+    for color in unique_colors:
+        color_tuple = tuple(color)
+
+        # 跳过背景颜色
+        if color_tuple == tuple(background_color):
+            continue
+
+        # 创建该颜色的掩码
+        mask = np.all(image_rgb == color, axis=2).astype(np.uint8)
+
+        # 计算像素数
+        pixel_count = np.sum(mask)
+
+        # 跳过太小的区域（可能是噪点）
+        if pixel_count < min_area:
+            continue
+
+        face_masks[face_id] = {
+            'mask': mask,
+            'category_id': None,  # 没有类别信息
+            'instance_name': f'face_{face_id}',
+            'color_rgb': list(color_tuple),
+            'area': int(pixel_count),
+            'pixel_count': int(pixel_count)
+        }
+
+        face_id += 1
+
+    print(f"共提取 {len(face_masks)} 个面")
+
+    return face_masks
+
+
+def load_color_json(json_path):
+    """
+    加载颜色转JSON脚本生成的标注文件
+
+    Args:
+        json_path: JSON标注文件路径
+
+    Returns:
+        faces: 面信息列表
+    """
+    with open(json_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+
+    faces = data.get('faces', [])
+    image_size = data.get('image_size', None)
+
+    print(f"加载颜色JSON文件: {json_path}")
+    print(f"  面数量: {len(faces)}")
+    if image_size:
+        print(f"  图像尺寸: {image_size['width']} x {image_size['height']}")
+
+    return faces, image_size
+
+
+def create_face_masks_from_color_json(faces, image_size):
+    """
+    从颜色JSON创建面掩码
+
+    Args:
+        faces: load_color_json返回的面信息列表
+        image_size: (height, width) 图像尺寸
+
+    Returns:
+        face_masks: dict, {face_id: mask_info}
+    """
+    height, width = image_size
+    face_masks = {}
+
+    for face in faces:
+        face_id = face["id"]
+        color_rgb = face.get("color_rgb", [0, 0, 0])
+        pixels = face.get("pixels", [])
+        area = face.get("area", 0)
+
+        # 创建掩码
+        mask = np.zeros((height, width), dtype=np.uint8)
+        for x, y in pixels:
+            if 0 <= x < width and 0 <= y < height:
+                mask[y, x] = 1
+
+        face_masks[face_id] = {
+            'mask': mask,
+            'category_id': None,  # 颜色JSON中没有类别信息
+            'instance_name': f'face_{face_id}',
+            'color_rgb': color_rgb,
+            'area': area,
+            'pixel_count': face.get('pixel_count', len(pixels))
+        }
+
+    return face_masks
+
+
 def load_annotations(json_path):
     """
     加载COCO格式的标注文件
@@ -124,7 +266,7 @@ def voting_postprocess(segmentation_map, face_masks, min_ratio=0.5):
 
     for instance_id, face_info in face_masks.items():
         mask = face_info['mask']
-        category_id = face_info['category_id']
+        category_id = face_info.get('category_id')  # 可能为None
         instance_name = face_info['instance_name']
 
         face_pixels = segmentation_map[mask == 1]
@@ -138,11 +280,17 @@ def voting_postprocess(segmentation_map, face_masks, min_ratio=0.5):
         predicted_ratio = counts[max_idx] / len(face_pixels)
 
         if predicted_ratio >= min_ratio:
+            # 主类别占比超过阈值，使用预测的类别
             result[mask == 1] = predicted_class
             decision = f"预测类别 {predicted_class}"
-        else:
+        elif category_id is not None:
+            # 有标注类别，使用标注类别
             result[mask == 1] = category_id
             decision = f"标注类别 {category_id}"
+        else:
+            # 没有标注类别，仍然使用预测的类别（即使占比不高）
+            result[mask == 1] = predicted_class
+            decision = f"预测类别 {predicted_class} (低置信度)"
 
         print(f"  面 {instance_name}: {decision} (占比: {predicted_ratio:.2%})")
 

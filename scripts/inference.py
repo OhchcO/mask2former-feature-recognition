@@ -114,8 +114,8 @@ def run_inference(image_path):
     return semantic_seg
 
 if __name__ == "__main__":
-    # test_image = r"E:\soft\code\Mask2former\train\images_png\000099.png"
-    test_image = r"E:\soft\code\Mask2former\test\2.png"
+    test_image = r"E:\soft\code\Mask2former\train\images_png\000001.png"
+    # test_image = r"E:\soft\code\Mask2former\test\2.png"
     import os
     if os.path.exists(test_image):
         result = run_inference(test_image)

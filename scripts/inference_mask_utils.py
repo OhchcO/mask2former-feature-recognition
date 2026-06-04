@@ -1,11 +1,23 @@
-# 推理时调用用json来做面统计
+"""
+推理时，输入2张图片，一张是原始图片，一张是面ID图，输出是原始图片的分割图
+
+用法：
+python scripts/inference_mask_utils.py --image E:\soft\code\Mask2former\train\images_png\000001.png --image E:\soft\code\Mask2former\train\images_png\000001.png --face_id_image E:\soft\code\Mask2former\temp\000001.png
+"""
 import torch
 import numpy as np
 from PIL import Image
 from transformers import Mask2FormerForUniversalSegmentation, Mask2FormerImageProcessor
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-from face_mask_utils import process_image_with_annotations
+from face_mask_utils import (
+    process_image_with_annotations,
+    load_color_json,
+    create_face_masks_from_color_json,
+    extract_face_masks_from_color_image,
+    voting_postprocess,
+    clip_segmentation_to_masks
+)
 
 
 plt.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "Arial Unicode MS"]
@@ -27,7 +39,7 @@ CLASS_COLORS = {
 
 # 投票后处理配置
 ENABLE_VOTING = True  # 是否启用投票后处理
-ANNOTATION_JSON = r"E:\soft\code\Mask2former\新建文件夹\coco_dataset.json"  # 标注文件路径
+ANNOTATION_JSON = r"E:\soft\code\Mask2former\temp\000001.json"  # 标注文件路径
 IMAGE_ID = 1  # 当前图像对应的ID（需要根据实际情况修改）
 VOTING_MIN_RATIO = 0.5  # 投票阈值
 
@@ -46,9 +58,9 @@ def build_legend_patches():
         patches.append(mpatches.Patch(color=color, label=f"{class_id}={class_name}"))
     return patches
 
-def run_inference(image_path, enable_voting=None, annotation_json=None, image_id=None, min_ratio=None):
-    model_dir = r"E:\soft\code\Mask2former\results\models\finetuned_model_v3"
-
+def run_inference(image_path, unc_image_path, enable_voting=None, annotation_json=None, image_id=None, min_ratio=None, face_id_image_path=None):
+    # model_dir = r"E:\soft\code\Mask2former\results\models\finetuned_model_v3"
+    model_dir = r"E:\soft\code\Mask2former\linux_models\finetuned_model_v4"
     # 使用全局配置或传入参数
     if enable_voting is None:
         enable_voting = ENABLE_VOTING
@@ -69,7 +81,9 @@ def run_inference(image_path, enable_voting=None, annotation_json=None, image_id
     print(f"设备: {device}")
 
     print(f"加载图像: {image_path}")
+    print(f"加载无色图像: {unc_image_path}")
     image = Image.open(image_path).convert("RGB")
+    unc_image = Image.open(unc_image_path).convert("RGB")
 
     inputs = processor(images=image, return_tensors="pt")
     inputs = {k: v.to(device) for k, v in inputs.items()}
@@ -89,12 +103,35 @@ def run_inference(image_path, enable_voting=None, annotation_json=None, image_id
     processed_seg = semantic_seg.copy()
     if enable_voting:
         import os
-        if os.path.exists(annotation_json):
-            processed_seg = process_image_with_annotations(
-                semantic_seg, annotation_json, image_id, min_ratio
-            )
+        import json
+
+        # 优先使用面ID图（直接从图像提取面信息）
+        if face_id_image_path and os.path.exists(face_id_image_path):
+            print(f"使用面ID图: {face_id_image_path}")
+            face_masks = extract_face_masks_from_color_image(face_id_image_path)
+            processed_seg = voting_postprocess(semantic_seg, face_masks, min_ratio)
+            processed_seg = clip_segmentation_to_masks(processed_seg, face_masks)
+        elif os.path.exists(annotation_json):
+            # 检测JSON格式
+            with open(annotation_json, 'r', encoding='utf-8') as f:
+                json_data = json.load(f)
+
+            if 'faces' in json_data:
+                # 颜色JSON格式（从color_to_json.py生成）
+                print("检测到颜色JSON格式")
+                faces, json_image_size = load_color_json(annotation_json)
+                image_size = semantic_seg.shape[:2]
+                face_masks = create_face_masks_from_color_json(faces, image_size)
+                processed_seg = voting_postprocess(semantic_seg, face_masks, min_ratio)
+                processed_seg = clip_segmentation_to_masks(processed_seg, face_masks)
+            else:
+                # COCO格式
+                print("检测到COCO JSON格式")
+                processed_seg = process_image_with_annotations(
+                    semantic_seg, annotation_json, image_id, min_ratio
+                )
         else:
-            print(f"警告: 标注文件不存在 {annotation_json}, 跳过投票后处理")
+            print(f"警告: 未找到面ID图或标注文件, 跳过投票后处理")
 
     # 可视化对比
     colored_seg = colorize_segmentation(semantic_seg)
@@ -120,8 +157,8 @@ def run_inference(image_path, enable_voting=None, annotation_json=None, image_id
     axes[0, 1].axis("off")
     axes[0, 1].legend(handles=legend_patches, loc="upper right", fontsize=9)
 
-    axes[0, 2].imshow(image)
-    axes[0, 2].imshow(overlay_seg, alpha=0.5)
+    axes[0, 2].imshow(unc_image)
+    axes[0, 2].imshow(overlay_seg, alpha=1)
     axes[0, 2].set_title("Raw Overlay")
     axes[0, 2].axis("off")
     axes[0, 2].legend(handles=legend_patches, loc="upper right", fontsize=9)
@@ -136,8 +173,8 @@ def run_inference(image_path, enable_voting=None, annotation_json=None, image_id
     axes[1, 1].axis("off")
     axes[1, 1].legend(handles=legend_patches, loc="upper right", fontsize=9)
 
-    axes[1, 2].imshow(image)
-    axes[1, 2].imshow(overlay_processed, alpha=0.5)
+    axes[1, 2].imshow(unc_image)
+    axes[1, 2].imshow(overlay_processed, alpha=1)
     axes[1, 2].set_title("Processed Overlay (Voting)")
     axes[1, 2].axis("off")
     axes[1, 2].legend(handles=legend_patches, loc="upper right", fontsize=9)
@@ -181,10 +218,14 @@ if __name__ == "__main__":
     import argparse, os
 
     parser = argparse.ArgumentParser(description="Mask2Former Inference with Voting Postprocess")
-    parser.add_argument("--image", type=str, default=r"E:\soft\code\Mask2former\test\1.png",
-                        help="输入图像路径")
+    parser.add_argument("--unc_image", type=str, default=None,
+                        help="输入图像路径（未处理图像）")
+    parser.add_argument("--image", type=str, default=r"E:\soft\code\Mask2former\train\images_png\000001.png",
+                        help="输入图像路径（原始图像）")
+    parser.add_argument("--face_id_image", type=str, default=None,
+                        help="面ID图路径（不同颜色表示不同面，优先使用）")
     parser.add_argument("--json", type=str, default=ANNOTATION_JSON,
-                        help="标注JSON文件路径")
+                        help="标注JSON文件路径（备选）")
     parser.add_argument("--image_id", type=int, default=IMAGE_ID,
                         help="图像ID（对应JSON中的image_id）")
     parser.add_argument("--min_ratio", type=float, default=VOTING_MIN_RATIO,
@@ -197,10 +238,12 @@ if __name__ == "__main__":
     if os.path.exists(args.image):
         result = run_inference(
             args.image,
+            args.unc_image,
             enable_voting=not args.no_voting,
             annotation_json=args.json,
             image_id=args.image_id,
-            min_ratio=args.min_ratio
+            min_ratio=args.min_ratio,
+            face_id_image_path=args.face_id_image
         )
     else:
         print(f"图像不存在: {args.image}")

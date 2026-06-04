@@ -41,6 +41,7 @@ val/masks/
 *.pth
 *.ckpt
 results/models/
+models--facebook--mask2former-swin-tiny-coco-panoptic/
 
 # Results and outputs
 results/
