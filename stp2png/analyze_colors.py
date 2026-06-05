@@ -156,3 +156,7 @@ if __name__ == "__main__":
         image2_path = sys.argv[2]
         if os.path.exists(image2_path):
             compare_images(image_path, image2_path)
+
+'''
+python e:\soft\code\Mask2former\stp2png\analyze_colors.py "E:\soft\code\Mask2former\train\train_images_png\000001_3.png"
+'''

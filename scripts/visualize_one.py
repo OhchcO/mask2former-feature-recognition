@@ -134,5 +134,5 @@ if __name__ == "__main__":
     mask_dir = r"E:\soft\code\Mask2former\train\masks_png"
     output_dir = r"E:\soft\code\Mask2former\results\visualizations\mapping_check"
     
-    img_file = "000066.png"
+    img_file = "000002.png"
     visualize_one_sample(image_dir, mask_dir, img_file, output_dir)
