@@ -1,0 +1,11 @@
+# PyTorch需要单独安装（CUDA版本）
+# pip install torch==1.13.0+cu116 torchvision==0.14.0+cu116 torchaudio==0.13.0+cu116 --extra-index-url https://download.pytorch.org/whl/cu116
+
+transformers>=4.20.0
+Pillow>=9.0.0
+numpy==1.26.4
+opencv-python>=4.5.0
+matplotlib>=3.5.0
+scipy>=1.7.0
+six
+python-dateutil

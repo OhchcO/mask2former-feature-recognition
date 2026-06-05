@@ -57,3 +57,7 @@ test/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# step files
+*.step  
+stp/

@@ -2,7 +2,7 @@
 推理时，输入2张图片，一张是原始图片，一张是面ID图，输出是原始图片的分割图
 
 用法：
-python scripts/inference_mask_utils.py --image E:\soft\code\Mask2former\train\images_png\000001.png --image E:\soft\code\Mask2former\train\images_png\000001.png --face_id_image E:\soft\code\Mask2former\temp\000001.png
+python scripts/inference_mask_utils.py --image E:\soft\code\Mask2former\train\images_png\000001_0.png --unc_image E:\soft\code\Mask2former\train\images_png\000001.png --face_id_image E:\soft\code\Mask2former\temp\000001.png
 """
 import torch
 import numpy as np
@@ -76,7 +76,7 @@ def run_inference(image_path, unc_image_path, enable_voting=None, annotation_jso
     model = Mask2FormerForUniversalSegmentation.from_pretrained(model_dir)
     model.eval()
 
-    device = torch.device("cuda")
+    device = torch.device("cpu")
     model = model.to(device)
     print(f"设备: {device}")
 
@@ -85,7 +85,7 @@ def run_inference(image_path, unc_image_path, enable_voting=None, annotation_jso
     image = Image.open(image_path).convert("RGB")
     unc_image = Image.open(unc_image_path).convert("RGB")
 
-    inputs = processor(images=image, return_tensors="pt")
+    inputs = processor(images=image, return_tensors="pt", padding=True)
     inputs = {k: v.to(device) for k, v in inputs.items()}
 
     print("运行推理...")
