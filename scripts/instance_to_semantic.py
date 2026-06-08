@@ -39,10 +39,15 @@ def convert_instance_to_semantic(instance_mask_path, class_map, output_path):
 
 
 def main():
-    # 配置路径
-    instance_mask_dir = r"E:\soft\code\Mask2former\train\instance_masks_png"
-    class_map_path = r"E:\soft\code\Mask2former\train\class_map.json"
-    output_dir = r"E:\soft\code\Mask2former\train\semantic_masks_png"
+    # 输入文件夹：包含实例掩码PNG和class_map.json
+    input_dir = r"E:\soft\code\Mask2former\temp\masks"
+    output_dir = os.path.join(input_dir, "semantic_masks")
+    class_map_path = os.path.join(input_dir, "class_map.json")
+
+    # 检查class_map.json是否存在
+    if not os.path.exists(class_map_path):
+        print(f"Error: class_map.json not found in {input_dir}")
+        return
 
     # 创建输出目录
     os.makedirs(output_dir, exist_ok=True)
@@ -53,17 +58,20 @@ def main():
 
     print(f"Loaded class_map.json with {len(class_map)} images")
 
-    # 获取所有实例掩码文件
-    mask_files = sorted([f for f in os.listdir(instance_mask_dir) if f.endswith('.png')])
+    # 获取所有实例掩码文件（排除semantic_masks子文件夹里的）
+    mask_files = sorted([
+        f for f in os.listdir(input_dir)
+        if f.endswith('.png') and os.path.isfile(os.path.join(input_dir, f))
+    ])
     print(f"Found {len(mask_files)} instance masks")
 
     # 转换
     success_count = 0
     for mask_file in mask_files:
-        instance_path = os.path.join(instance_mask_dir, mask_file)
-        output_path = os.path.join(output_dir, mask_file)
+        instance_path = os.path.join(input_dir, mask_file)
+        out_path = os.path.join(output_dir, mask_file)
 
-        if convert_instance_to_semantic(instance_path, class_map, output_path):
+        if convert_instance_to_semantic(instance_path, class_map, out_path):
             success_count += 1
             print(f"  Converted: {mask_file}")
         else:

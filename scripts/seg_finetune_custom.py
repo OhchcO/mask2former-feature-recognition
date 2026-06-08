@@ -1,6 +1,8 @@
-# 训练自定义数据集
+# 语义分割训练
+# 输入：图片 + 语义掩码（0=背景, 1-4=类别）
 import torch
 from torch.utils.data import Dataset, DataLoader
+from torch.utils.tensorboard import SummaryWriter
 from transformers import Mask2FormerForUniversalSegmentation, Mask2FormerImageProcessor
 from PIL import Image
 import os
@@ -265,9 +267,10 @@ def finetune():
     val_image_dir = r"E:\soft\code\Mask2former\val\val_images_png"
     val_mask_dir = r"E:\soft\code\Mask2former\val\val_masks_png"
     save_dir = r"E:\soft\code\Mask2former\results\models\finetuned_model_v4"
-    
+    log_dir = r"E:\soft\code\Mask2former\results\tensorboard_logs_seg"
+
     print("=" * 60)
-    print("Mask2Former Fine-tuning Script (with Validation)")
+    print("Mask2Former Semantic Segmentation Fine-tuning")
     print("=" * 60)
     
     print("\n[Step 1/6] Loading pretrained model...")
@@ -345,7 +348,8 @@ def finetune():
     )
 
     num_epochs = 30
-    
+    patience = 10  # 早停耐心值：mIoU连续不提升则停止
+
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, 
         T_max=num_epochs,
@@ -371,11 +375,16 @@ def finetune():
     
     print("\n[Step 4/6] Starting fine-tuning...")
     print("=" * 60)
-    
+
+    # 初始化TensorBoard
+    writer = SummaryWriter(log_dir=log_dir)
+    print(f"TensorBoard logs: {log_dir}")
+
     best_loss = float('inf')
-    best_miou = 0.0
+    best_mIoU = 0.0
+    no_improve_epochs = 0
     training_history = []
-    
+
     start_time = time.time()
     
     for epoch in range(num_epochs):
@@ -431,16 +440,39 @@ def finetune():
             'lr': current_lr,
             'time': epoch_time
         })
-        
+
+        # TensorBoard记录
+        writer.add_scalar('Loss/train', avg_train_loss, epoch + 1)
+        writer.add_scalar('LR', current_lr, epoch + 1)
+        if val_accuracy is not None:
+            writer.add_scalar('Accuracy/val', val_accuracy, epoch + 1)
+        if val_miou is not None:
+            writer.add_scalar('mIoU/val', val_miou, epoch + 1)
+        if val_iou_per_class is not None:
+            for cls_id, cls_name in CLASS_NAMES.items():
+                if not np.isnan(val_iou_per_class[cls_id]):
+                    writer.add_scalar(f'IoU_per_class/{cls_name}', val_iou_per_class[cls_id], epoch + 1)
+
         print(f"Epoch [{epoch+1}/{num_epochs}] completed, Train Loss: {avg_train_loss:.4f}, LR: {current_lr:.2e}, Time: {epoch_time:.1f}s")
-        
+
         if avg_train_loss < best_loss:
             best_loss = avg_train_loss
             print(f"  -> New best loss: {best_loss:.4f}")
-        
-        if val_miou is not None and val_miou > best_miou:
-            best_miou = val_miou
-            print(f"  -> New best mIoU: {best_miou:.4f}")
+
+        if val_miou is not None and val_miou > best_mIoU:
+            best_mIoU = val_miou
+            no_improve_epochs = 0
+            # 保存最佳模型
+            best_save_dir = os.path.join(save_dir, "best_model")
+            os.makedirs(best_save_dir, exist_ok=True)
+            model.save_pretrained(best_save_dir)
+            processor.save_pretrained(best_save_dir)
+            print(f"  -> New best mIoU: {best_mIoU:.4f}, model saved")
+        else:
+            no_improve_epochs += 1
+            if no_improve_epochs >= patience:
+                print(f"\n  Early stopping: mIoU not improved for {patience} epochs")
+                break
     
     total_time = time.time() - start_time
     
@@ -456,7 +488,7 @@ def finetune():
     print("=" * 60)
     print(f"Total time: {total_time:.1f}s ({total_time/60:.1f} min)")
     print(f"Best loss: {best_loss:.4f}")
-    print(f"Best mIoU: {best_miou:.4f}")
+    print(f"Best mIoU: {best_mIoU:.4f}")
     print(f"Final loss: {training_history[-1]['train_loss']:.4f}")
     print(f"Model saved to: {save_dir}")
     
@@ -491,6 +523,14 @@ def finetune():
             else:
                 print(f"  {cls_name}: N/A")
     
+    # 关闭TensorBoard
+    writer.close()
+
+    print("\n" + "=" * 60)
+    print("View training curves with TensorBoard:")
+    print(f"  tensorboard --logdir={log_dir}")
+    print("=" * 60)
+
     print("\nUsage:")
     print(f'  from transformers import Mask2FormerForUniversalSegmentation, Mask2FormerImageProcessor')
     print(f'  processor = Mask2FormerImageProcessor.from_pretrained("{save_dir}")')
