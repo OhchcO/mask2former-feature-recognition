@@ -96,7 +96,7 @@ def verify_semantic_labels(input_dir, output_dir):
 
 if __name__ == "__main__":
     # 设置输入文件夹（包含语义掩码PNG）和输出文件夹
-    input_dir = r"E:\soft\code\Mask2former\temp\masks\semantic_masks"
-    output_dir = r"E:\soft\code\Mask2former\results\verify_semantic_labels"
+    input_dir = r"E:\soft\code\Mask2former_data\temp"
+    output_dir = r"E:\soft\code\Mask2former_data\results\verify_seg_labels"
 
     verify_semantic_labels(input_dir, output_dir)

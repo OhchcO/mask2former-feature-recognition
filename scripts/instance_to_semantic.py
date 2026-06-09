@@ -40,9 +40,9 @@ def convert_instance_to_semantic(instance_mask_path, class_map, output_path):
 
 def main():
     # 输入文件夹：包含实例掩码PNG和class_map.json
-    input_dir = r"E:\soft\code\Mask2former\temp\masks"
-    output_dir = os.path.join(input_dir, "semantic_masks")
-    class_map_path = os.path.join(input_dir, "class_map.json")
+    input_dir = r"E:\soft\code\Mask2former_data\data\semantic_views_train\masks_train"
+    output_dir = os.path.join(input_dir, "semantic_masks_train")
+    class_map_path = os.path.join(input_dir, "class_map_train.json")
 
     # 检查class_map.json是否存在
     if not os.path.exists(class_map_path):

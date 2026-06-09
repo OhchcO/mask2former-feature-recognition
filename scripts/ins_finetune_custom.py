@@ -9,6 +9,7 @@ import os
 import json
 import numpy as np
 import time
+from tqdm import tqdm
 
 CLASS_NAMES = {
     0: "Background",
@@ -21,6 +22,10 @@ CLASS_NAMES = {
 NUM_CLASSES = len(CLASS_NAMES)
 
 CLASS_WEIGHTS = [0.0048, 0.7365, 0.9892, 2.5213, 0.7483]
+
+# 调试开关：True 时只取前12个样本快速验证，False 使用全量数据
+DEBUG_MODE = False
+MAX_SAMPLES = 12
 
 
 class InstanceSegmentationDataset(Dataset):
@@ -120,82 +125,41 @@ def get_device():
     return device
 
 
-def compute_mask_iou(mask1, mask2):
-    """计算两个二值掩码的IoU"""
-    intersection = np.sum(mask1 & mask2)
-    union = np.sum(mask1 | mask2)
-    return intersection / union if union > 0 else 0.0
+def mask_to_coco_rle(binary_mask):
+    """将二值掩码转换为 COCO RLE 格式"""
+    from pycocotools import mask as coco_mask
+    rle = coco_mask.encode(np.asfortranarray(binary_mask.astype(np.uint8)))
+    rle['counts'] = rle['counts'].decode('utf-8')
+    return rle
 
 
-def compute_ap(gt_boxes, pred_boxes, iou_threshold=0.5):
-    """计算单个类别的AP
-    gt_boxes: list of binary masks (GT实例)
-    pred_boxes: list of (binary_mask, confidence) (预测实例)
-    """
-    if len(gt_boxes) == 0 and len(pred_boxes) == 0:
-        return 1.0
-    if len(gt_boxes) == 0 or len(pred_boxes) == 0:
-        return 0.0
-
-    # 按置信度排序（从高到低）
-    pred_boxes_sorted = sorted(pred_boxes, key=lambda x: x[1], reverse=True)
-
-    tp_list = []
-    fp_list = []
-    matched_gt = set()
-
-    for pred_mask, conf in pred_boxes_sorted:
-        best_iou = 0.0
-        best_gt_idx = -1
-        for gt_idx, gt_mask in enumerate(gt_boxes):
-            if gt_idx in matched_gt:
-                continue
-            iou = compute_mask_iou(pred_mask, gt_mask)
-            if iou > best_iou:
-                best_iou = iou
-                best_gt_idx = gt_idx
-
-        if best_iou >= iou_threshold and best_gt_idx >= 0:
-            tp_list.append(1)
-            fp_list.append(0)
-            matched_gt.add(best_gt_idx)
-        else:
-            tp_list.append(0)
-            fp_list.append(1)
-
-    # 计算累积TP/FP
-    tp_cumsum = np.cumsum(tp_list)
-    fp_cumsum = np.cumsum(fp_list)
-    total_gt = len(gt_boxes)
-
-    precision = tp_cumsum / (tp_cumsum + fp_cumsum)
-    recall = tp_cumsum / total_gt
-
-    # AP = P-R曲线下面积（11点插值法）
-    ap = 0.0
-    for t in np.arange(0, 1.1, 0.1):
-        prec_at_recall = precision[recall >= t]
-        if len(prec_at_recall) > 0:
-            ap += np.max(prec_at_recall) / 11.0
-
-    return ap
+def mask_to_bbox(binary_mask):
+    """从二值掩码获取 bbox [x, y, w, h]"""
+    ys, xs = np.where(binary_mask)
+    if len(xs) == 0:
+        return [0, 0, 0, 0]
+    return [int(xs.min()), int(ys.min()), int(xs.max() - xs.min() + 1), int(ys.max() - ys.min() + 1)]
 
 
 def evaluate_model(model, processor, dataloader, device, num_classes, iou_threshold=0.5):
     """评估实例分割模型（mAP）
-    逐实例匹配，按置信度排序计算AP
+    使用 pycocotools COCOeval 进行标准 COCO 评估
     """
+    from pycocotools.coco import COCO
+    from pycocotools.cocoeval import COCOeval
+
     model.eval()
 
-    # 收集所有预测和GT，按类别分组
-    all_predictions = {cls: [] for cls in range(num_classes)}  # cls: [(conf, img_idx, pred_idx)]
-    all_gt_counts = {cls: 0 for cls in range(num_classes)}     # cls: GT实例总数
-    all_pred_data = {}  # (img_idx, pred_idx) -> (mask, cls, conf)
-    all_gt_data = {}    # (img_idx, gt_idx) -> (mask, cls)
+    # COCO 格式数据
+    coco_images = []
+    coco_annotations = []
+    coco_results = []
 
-    img_idx = 0
+    ann_id = 0
+    img_id = 0
+
     with torch.no_grad():
-        for inputs, mask_labels, class_labels in dataloader:
+        for inputs, mask_labels, class_labels in tqdm(dataloader, desc="  Validating"):
             inputs = {k: v.to(device) for k, v in inputs.items()}
             batch_size = inputs["pixel_values"].shape[0]
             h, w = mask_labels[0].shape[1], mask_labels[0].shape[2]
@@ -207,44 +171,109 @@ def evaluate_model(model, processor, dataloader, device, num_classes, iou_thresh
             )
 
             for i, pred_result in enumerate(pred_results):
-                pred_masks = pred_result['masks'].cpu().numpy()
-                pred_labels = pred_result['labels'].cpu().numpy()
-                pred_scores = pred_result['scores'].cpu().numpy()
+                seg_map = pred_result['segmentation'].cpu().numpy()
+                segments_info = pred_result['segments_info']
 
-                cur_img_idx = img_idx + i
+                cur_img_id = img_id + i
+
+                coco_images.append({
+                    "id": cur_img_id,
+                    "width": w,
+                    "height": h
+                })
 
                 # 收集预测
-                for p_idx in range(len(pred_scores)):
-                    cls = int(pred_labels[p_idx])
-                    if cls < num_classes:
-                        all_predictions[cls].append((pred_scores[p_idx], cur_img_idx, p_idx))
-                        all_pred_data[(cur_img_idx, p_idx)] = (pred_masks[p_idx] > 0.5, cls, pred_scores[p_idx])
+                for seg in segments_info:
+                    inst_id = seg['id']
+                    cls = seg['label_id']
+                    score = seg['score']
 
-                # 收集GT
+                    if cls < num_classes:
+                        binary_mask = (seg_map == inst_id).astype(np.uint8)
+                        area = int(binary_mask.sum())
+                        if area == 0:
+                            continue
+                        rle = mask_to_coco_rle(binary_mask)
+                        bbox = mask_to_bbox(binary_mask)
+
+                        coco_results.append({
+                            "image_id": cur_img_id,
+                            "category_id": cls,
+                            "segmentation": rle,
+                            "area": area,
+                            "bbox": bbox,
+                            "score": score
+                        })
+
+                # 收集 GT
                 gt_mask_labels = mask_labels[i]
                 gt_class_labels = class_labels[i]
                 for g_idx in range(len(gt_class_labels)):
                     cls = int(gt_class_labels[g_idx])
+                    if cls == 0 or cls >= num_classes:
+                        continue
                     gt_mask = gt_mask_labels[g_idx].numpy() > 0.5
-                    all_gt_data[(cur_img_idx, g_idx)] = (gt_mask, cls)
-                    all_gt_counts[cls] += 1
+                    area = int(gt_mask.sum())
+                    if area == 0:
+                        continue
+                    rle = mask_to_coco_rle(gt_mask.astype(np.uint8))
+                    bbox = mask_to_bbox(gt_mask)
 
-            img_idx += batch_size
+                    coco_annotations.append({
+                        "id": ann_id,
+                        "image_id": cur_img_id,
+                        "category_id": cls,
+                        "segmentation": rle,
+                        "area": area,
+                        "bbox": bbox,
+                        "iscrowd": 0
+                    })
+                    ann_id += 1
 
-    # 按类别计算AP
+            img_id += batch_size
+
+    # 没有预测或没有 GT 则返回 0
+    if len(coco_annotations) == 0 or len(coco_results) == 0:
+        return 0.0, [0.0] * (num_classes - 1)
+
+    # 构建 COCO categories
+    coco_categories = [
+        {"id": cls_id, "name": name}
+        for cls_id, name in CLASS_NAMES.items()
+        if cls_id != 0
+    ]
+
+    coco_gt = COCO()
+    coco_gt.dataset = {
+        "images": coco_images,
+        "annotations": coco_annotations,
+        "categories": coco_categories
+    }
+    coco_gt.createIndex()
+
+    coco_dt = coco_gt.loadRes(coco_results)
+
+    # COCOeval: 使用 mask IoU（ segm 模式）
+    coco_eval = COCOeval(coco_gt, coco_dt, "segm")
+    coco_eval.params.iouThrs = [iou_threshold]  # 只用 0.5
+    coco_eval.params.maxDets = [1, 10, 100]
+    coco_eval.evaluate()
+    coco_eval.accumulate()
+    coco_eval.summarize()
+
+    # 获取各类别 AP（跳过背景，过滤无效值-1.0）
     ap_per_class = []
-    for cls in range(num_classes):
-        gt_list = [(k, v[0]) for k, v in all_gt_data.items() if v[1] == cls]
-        pred_list = all_predictions[cls]
+    for cls_id in range(1, num_classes):
+        cls_idx = coco_eval.params.catIds.index(cls_id) if cls_id in coco_eval.params.catIds else -1
+        if cls_idx >= 0:
+            prec = coco_eval.eval['precision'][0, :, cls_idx, 0, -1]
+            prec_valid = prec[prec >= 0]  # 过滤 -1.0（无GT的无效值）
+            ap_val = np.mean(prec_valid) if len(prec_valid) > 0 else 0.0
+            ap_per_class.append(float(ap_val))
+        else:
+            ap_per_class.append(0.0)
 
-        # 构建该类别的GT和预测
-        gt_masks = [item[1] for item in gt_list]
-        pred_items = [(all_pred_data[k][0], all_pred_data[k][2]) for k, _ in pred_list]
-
-        ap = compute_ap(gt_masks, pred_items, iou_threshold)
-        ap_per_class.append(ap)
-
-    valid_aps = [ap for ap in ap_per_class if not np.isnan(ap)]
+    valid_aps = [ap for ap in ap_per_class if ap >= 0]
     mAP = np.mean(valid_aps) if valid_aps else 0.0
 
     return mAP, ap_per_class
@@ -282,14 +311,14 @@ def run_sanity_check(model, processor, train_loader, device):
 
 def finetune():
     model_dir = r"E:\soft\code\Mask2former"
-    train_image_dir = r"E:\soft\code\Mask2former\train\train_images_png"
-    train_mask_dir = r"E:\soft\code\Mask2former\train\train_instance_masks_png"
-    train_class_map = r"E:\soft\code\Mask2former\train\train_class_map.json"
-    val_image_dir = r"E:\soft\code\Mask2former\val\val_images_png"
-    val_mask_dir = r"E:\soft\code\Mask2former\val\val_instance_masks_png"
-    val_class_map = r"E:\soft\code\Mask2former\val\val_class_map.json"
-    save_dir = r"E:\soft\code\Mask2former\results\models\finetuned_instance_model"
-    log_dir = r"E:\soft\code\Mask2former\results\tensorboard_logs"
+    train_image_dir = r"E:\soft\code\Mask2former_data\data\semantic_views_train"
+    train_mask_dir = r"E:\soft\code\Mask2former_data\data\ins_masks_train"
+    train_class_map = r"E:\soft\code\Mask2former_data\data\class_map_train.json"
+    val_image_dir = r"E:\soft\code\Mask2former_data\data\semantic_views_val"
+    val_mask_dir = r"E:\soft\code\Mask2former_data\data\ins_masks_val"
+    val_class_map = r"E:\soft\code\Mask2former_data\data\class_map_val.json"
+    save_dir = r"E:\soft\code\Mask2former_data\results\models\finetuned_instance_model_v4"
+    log_dir = r"E:\soft\code\Mask2former_data\results\tensorboard_logs_ins"
 
     print("=" * 60)
     print("Mask2Former Instance Segmentation Fine-tuning")
@@ -328,6 +357,10 @@ def finetune():
     train_dataset = InstanceSegmentationDataset(
         train_image_dir, train_mask_dir, train_class_map, processor
     )
+    # 快速验证：只取前MAX_SAMPLES个样本
+    if DEBUG_MODE and len(train_dataset) > MAX_SAMPLES:
+        train_dataset.images = train_dataset.images[:MAX_SAMPLES]
+        print(f"[DEBUG] Truncated train dataset to {len(train_dataset)} samples")
 
     val_dataset = None
     if (os.path.exists(val_image_dir) and os.path.exists(val_mask_dir)
@@ -335,6 +368,9 @@ def finetune():
         val_dataset = InstanceSegmentationDataset(
             val_image_dir, val_mask_dir, val_class_map, processor
         )
+        if DEBUG_MODE and len(val_dataset) > MAX_SAMPLES:
+            val_dataset.images = val_dataset.images[:MAX_SAMPLES]
+            print(f"[DEBUG] Truncated val dataset to {len(val_dataset)} samples")
     else:
         print("Warning: Validation dataset not found, skipping validation")
 
@@ -344,7 +380,7 @@ def finetune():
 
     train_loader = DataLoader(
         train_dataset,
-        batch_size=6,
+        batch_size=4,
         shuffle=True,
         num_workers=0,
         pin_memory=True if device.type == "cuda" else False,
@@ -355,7 +391,7 @@ def finetune():
     if val_dataset and len(val_dataset) > 0:
         val_loader = DataLoader(
             val_dataset,
-            batch_size=6,
+            batch_size=4,
             shuffle=False,
             num_workers=0,
             pin_memory=True if device.type == "cuda" else False,
@@ -385,7 +421,7 @@ def finetune():
 
     print(f"\nTraining Configuration:")
     print(f"  Epochs: {num_epochs}")
-    print(f"  Batch size: 6")
+    print(f"  Batch size: 4")
     print(f"  Learning rate: 5e-5")
     print(f"  Image size: 1024x1024")
     print(f"  Number of classes: {NUM_CLASSES}")
@@ -404,9 +440,11 @@ def finetune():
     print("\n[Step 4/6] Starting fine-tuning...")
     print("=" * 60)
 
-    # 初始化TensorBoard
-    writer = SummaryWriter(log_dir=log_dir)
-    print(f"TensorBoard logs: {log_dir}")
+    # 初始化TensorBoard（每次运行创建带时间戳的子文件夹）
+    from datetime import datetime
+    run_name = datetime.now().strftime("%Y%m%d_%H%M%S")
+    writer = SummaryWriter(log_dir=os.path.join(log_dir, run_name))
+    print(f"TensorBoard logs: {log_dir}/{run_name}")
 
     best_loss = float('inf')
     best_mAP = 0.0
@@ -419,7 +457,8 @@ def finetune():
         total_loss = 0
         epoch_start_time = time.time()
 
-        for batch_idx, (inputs, mask_labels, class_labels) in enumerate(train_loader):
+        pbar = tqdm(train_loader, desc=f"Epoch [{epoch+1}/{num_epochs}]", leave=False)
+        for batch_idx, (inputs, mask_labels, class_labels) in enumerate(pbar):
             inputs = {k: v.to(device) for k, v in inputs.items()}
             mask_labels_device = [m.to(device) for m in mask_labels]
             class_labels_device = [c.to(device) for c in class_labels]
@@ -437,9 +476,7 @@ def finetune():
             optimizer.step()
 
             total_loss += loss.item()
-
-            if (batch_idx + 1) % 5 == 0 or batch_idx == 0:
-                print(f"  Epoch [{epoch+1}/{num_epochs}], Step [{batch_idx+1}/{len(train_loader)}], Loss: {loss.item():.4f}")
+            pbar.set_postfix(loss=f"{loss.item():.4f}", lr=f"{optimizer.param_groups[0]['lr']:.2e}")
 
         scheduler.step()
         avg_train_loss = total_loss / len(train_loader)
@@ -471,9 +508,10 @@ def finetune():
         if val_mAP is not None:
             writer.add_scalar('mAP/val', val_mAP, epoch + 1)
         if val_ap_per_class is not None:
-            for cls_id, cls_name in CLASS_NAMES.items():
-                if not np.isnan(val_ap_per_class[cls_id]):
-                    writer.add_scalar(f'AP_per_class/{cls_name}', val_ap_per_class[cls_id], epoch + 1)
+            for idx, cls_id in enumerate(range(1, NUM_CLASSES)):
+                cls_name = CLASS_NAMES[cls_id]
+                if not np.isnan(val_ap_per_class[idx]):
+                    writer.add_scalar(f'AP_per_class/{cls_name}', val_ap_per_class[idx], epoch + 1)
 
         print(f"Epoch [{epoch+1}/{num_epochs}] completed, Train Loss: {avg_train_loss:.4f}, LR: {current_lr:.2e}, Time: {epoch_time:.1f}s")
 
@@ -534,8 +572,9 @@ def finetune():
         print("Final Validation - AP per Class (IoU=0.5)")
         print("=" * 60)
         final_ap = training_history[-1]['val_ap_per_class']
-        for cls_id, cls_name in CLASS_NAMES.items():
-            ap_val = final_ap[cls_id]
+        for idx, cls_id in enumerate(range(1, NUM_CLASSES)):
+            cls_name = CLASS_NAMES[cls_id]
+            ap_val = final_ap[idx]
             if not np.isnan(ap_val):
                 print(f"  {cls_name}: {ap_val:.4f}")
             else:

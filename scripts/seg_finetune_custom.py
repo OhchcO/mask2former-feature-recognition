@@ -8,6 +8,7 @@ from PIL import Image
 import os
 import numpy as np
 import time
+from tqdm import tqdm
 
 CLASS_NAMES = {
     0: "Background",
@@ -147,7 +148,7 @@ def evaluate_model(model, dataloader, device, num_classes):
     iou_counts = np.zeros(num_classes)
     
     with torch.no_grad():
-        for inputs, mask_labels, class_labels, gt_masks in dataloader:
+        for inputs, mask_labels, class_labels, gt_masks in tqdm(dataloader, desc="  Validating"):
             inputs = {k: v.to(device) for k, v in inputs.items()}
             
             outputs = model(**inputs)
@@ -262,11 +263,11 @@ def run_sanity_check(model, train_loader, val_loader, device):
 
 def finetune():
     model_dir = r"E:\soft\code\Mask2former"
-    train_image_dir = r"E:\soft\code\Mask2former\train\train_images_png"
-    train_mask_dir = r"E:\soft\code\Mask2former\train\train_masks_png"
-    val_image_dir = r"E:\soft\code\Mask2former\val\val_images_png"
-    val_mask_dir = r"E:\soft\code\Mask2former\val\val_masks_png"
-    save_dir = r"E:\soft\code\Mask2former\results\models\finetuned_model_v4"
+    train_image_dir = r"E:\soft\code\Mask2former_data\data\semantic_views_train"
+    train_mask_dir = r"E:\soft\code\Mask2former_data\data\seg_masks_train"
+    val_image_dir = r"E:\soft\code\Mask2former_data\data\semantic_views_val"
+    val_mask_dir = r"E:\soft\code\Mask2former_data\data\seg_masks_val"
+    save_dir = r"E:\soft\code\Mask2former_data\results\models\finetuned_model_segv4"
     log_dir = r"E:\soft\code\Mask2former\results\tensorboard_logs_seg"
 
     print("=" * 60)
@@ -377,8 +378,10 @@ def finetune():
     print("=" * 60)
 
     # 初始化TensorBoard
-    writer = SummaryWriter(log_dir=log_dir)
-    print(f"TensorBoard logs: {log_dir}")
+    from datetime import datetime
+    run_name = datetime.now().strftime("%Y%m%d_%H%M%S")
+    writer = SummaryWriter(log_dir=os.path.join(log_dir, run_name))
+    print(f"TensorBoard logs: {log_dir}/{run_name}")
 
     best_loss = float('inf')
     best_mIoU = 0.0
@@ -392,27 +395,26 @@ def finetune():
         total_loss = 0
         epoch_start_time = time.time()
         
-        for batch_idx, (inputs, mask_labels, class_labels, _) in enumerate(train_loader):
+        pbar = tqdm(train_loader, desc=f"Epoch [{epoch+1}/{num_epochs}]", leave=False)
+        for batch_idx, (inputs, mask_labels, class_labels, _) in enumerate(pbar):
             inputs = {k: v.to(device) for k, v in inputs.items()}
             mask_labels = [m.to(device) for m in mask_labels]
             class_labels = [c.to(device) for c in class_labels]
-            
+
             outputs = model(
                 pixel_values=inputs["pixel_values"],
                 mask_labels=mask_labels,
                 class_labels=class_labels
             )
             loss = outputs.loss
-            
+
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
-            
+
             total_loss += loss.item()
-            
-            if (batch_idx + 1) % 5 == 0 or batch_idx == 0:
-                print(f"  Epoch [{epoch+1}/{num_epochs}], Step [{batch_idx+1}/{len(train_loader)}], Loss: {loss.item():.4f}")
+            pbar.set_postfix(loss=f"{loss.item():.4f}", lr=f"{optimizer.param_groups[0]['lr']:.2e}")
         
         scheduler.step()
         
