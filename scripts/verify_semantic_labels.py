@@ -49,6 +49,8 @@ def verify_semantic_labels(input_dir, output_dir):
                          if f.endswith('.png') and os.path.isfile(os.path.join(input_dir, f))])
     print(f"Found {len(mask_files)} semantic masks in {input_dir}")
 
+    global_value_counts = {}
+
     for mask_file in mask_files:
         mask_path = os.path.join(input_dir, mask_file)
         semantic_mask = np.array(Image.open(mask_path).convert("L"))
@@ -56,8 +58,15 @@ def verify_semantic_labels(input_dir, output_dir):
         # 染色
         color_img = colorize_semantic_mask(semantic_mask)
 
-        # 统计类别
-        unique_ids = np.unique(semantic_mask)
+        # 统计灰度值
+        unique_ids, counts = np.unique(semantic_mask, return_counts=True)
+        print(f"\n{mask_file} 灰度值统计:")
+        for value, count in zip(unique_ids, counts):
+            value = int(value)
+            count = int(count)
+            global_value_counts[value] = global_value_counts.get(value, 0) + count
+            name = SEMANTIC_NAMES.get(value, "未定义")
+            print(f"  gray={value:<3} {name:<6} {count} px")
 
         # 绘图：左原图右染色
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
@@ -91,12 +100,24 @@ def verify_semantic_labels(input_dir, output_dir):
         plt.close()
         print(f"  Saved: {out_path}")
 
+    total_pixels = sum(global_value_counts.values())
+    print("\n" + "=" * 60)
+    print("全目录灰度值统计")
+    print("=" * 60)
+    print(f"{'Gray':<8}{'Name':<10}{'Pixels':<15}{'Percentage':<12}")
+    print("-" * 60)
+    for value in sorted(global_value_counts):
+        count = global_value_counts[value]
+        percentage = count / total_pixels * 100 if total_pixels > 0 else 0
+        name = SEMANTIC_NAMES.get(value, "未定义")
+        print(f"{value:<8}{name:<10}{count:<15}{percentage:.4f}%")
+
     print(f"\nDone! Verified {len(mask_files)} masks -> {output_dir}")
 
 
 if __name__ == "__main__":
     # 设置输入文件夹（包含语义掩码PNG）和输出文件夹
-    input_dir = r"E:\soft\code\Mask2former_data\temp"
+    input_dir = r"E:\soft\code\Mask2former_data\data\temp"
     output_dir = r"E:\soft\code\Mask2former_data\results\verify_seg_labels"
 
     verify_semantic_labels(input_dir, output_dir)

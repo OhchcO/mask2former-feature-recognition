@@ -1,0 +1,8 @@
+// 权重 610 实例分割推理 验证集
+python scripts/ins_inference_mask_utils.py --image "E:\soft\code\Mask2former_data\data_augmentation_0610\semantic_views_val\000117-0.png" --face_id_image "E:\soft\code\Mask2former_data\data_augmentation_0610\unique_views\000117.png" --model_dir "E:\soft\code\results\models\finetuned_instance_model_v610"
+// 权重 610 实例分割推理 训练集
+python scripts/ins_inference_mask_utils.py --image "E:\soft\code\Mask2former_data\data_augmentation_0610\semantic_views_train\000021-0.png" --face_id_image "E:\soft\code\Mask2former_data\data_augmentation_0610\unique_views\000021.png" --model_dir "E:\soft\code\results\models\finetuned_instance_model_v610"
+// 权重 610_encoded 实例分割推理 训练集
+python scripts/ins_inference_encoded.py --image "E:\soft\code\Mask2former_data\data_augmentation_0610\encoded_train\000021-0.png" --model_dir "E:\soft\code\results\models\finetuned_instance_model_v610_encoded"
+// 权重 610_encoded 实例分割推理 验证集
+python scripts/ins_inference_encoded.py --image "E:\soft\code\Mask2former_data\data_augmentation_0610\encoded_val\000117-0.png" --model_dir "E:\soft\code\results\models\finetuned_instance_model_v610_encoded"
