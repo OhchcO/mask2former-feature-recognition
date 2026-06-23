@@ -1,34 +1,18 @@
 # 语义分割训练
 # 输入：图片 + 语义掩码（0=背景, 1-4=类别）
+import sys
+import os
+sys.path.insert(0, os.path.dirname(__file__))
+from config import CLASS_NAMES, NUM_CLASSES, LABEL_MAPPING, CLASS_WEIGHTS
+
 import torch
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from transformers import Mask2FormerForUniversalSegmentation, Mask2FormerImageProcessor
 from PIL import Image
-import os
 import numpy as np
 import time
 from tqdm import tqdm
-
-CLASS_NAMES = {
-    0: "Background",
-    1: "宽体槽",
-    2: "封闭槽",
-    3: "开放槽",
-    4: "孔"
-}
-
-NUM_CLASSES = len(CLASS_NAMES)
-
-LABEL_MAPPING = {
-    255: 0,
-    0: 1,
-    1: 2,
-    2: 3,
-    3: 4
-}
-
-CLASS_WEIGHTS = [0.0048, 0.7365, 0.9892, 2.5213, 0.7483]
 
 class SegmentationDataset(Dataset):
     def __init__(self, image_dir, mask_dir, processor, size=(1024, 1024)):
@@ -284,11 +268,16 @@ def finetune():
     )
     print(f"Set num_labels to {NUM_CLASSES} (was 133 for COCO)")
     
-    if hasattr(model, 'config') and CLASS_WEIGHTS is not None:
-        model.config.class_weight = CLASS_WEIGHTS
-        print(f"Set class weights: {CLASS_WEIGHTS}")
-    
     device = get_device()
+
+    if CLASS_WEIGHTS is not None:
+        class_weights_tensor = torch.tensor(CLASS_WEIGHTS, dtype=torch.float32)
+        eos_coef = model.criterion.eos_coef
+        full_weights = torch.cat([class_weights_tensor, torch.tensor([eos_coef])])
+        model.criterion.empty_weight = full_weights.to(device)
+        print(f"Set per-class weights: {CLASS_WEIGHTS}")
+        print(f"Full criterion weights (with no-object): {model.criterion.empty_weight.tolist()}")
+
     model = model.to(device)
     
     print("\n[Step 2/6] Preparing data...")

@@ -1,27 +1,24 @@
 # 实例分割训练 (Linux版)
 # 输入：图片 + 实例掩码（每个实例不同像素值）+ class_map.json
+import sys
+import os
+sys.path.insert(0, os.path.dirname(__file__))
+from config import (  # type: ignore
+    CLASS_NAMES, NUM_CLASSES, CLASS_WEIGHTS,
+    MODEL_DIR, SAVE_DIR, LOG_DIR, DATA_ROOT,
+    TRAIN_IMAGE_DIR, TRAIN_MASK_DIR, VAL_IMAGE_DIR, VAL_MASK_DIR,
+    INSTANCE_CLASS_MAP_PATH,
+)
+
 import torch
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from transformers import Mask2FormerForUniversalSegmentation, Mask2FormerImageProcessor
 from PIL import Image
-import os
 import json
 import numpy as np
 import time
 from tqdm import tqdm
-
-CLASS_NAMES = {
-    0: "Background",
-    1: "宽体槽",
-    2: "封闭槽",
-    3: "开放槽",
-    4: "孔"
-}
-
-NUM_CLASSES = len(CLASS_NAMES)
-
-CLASS_WEIGHTS = [0.0048, 0.7365, 0.9892, 2.5213, 0.7483]
 
 # 调试开关：True 时只取前12个样本快速验证，False 使用全量数据
 DEBUG_MODE = False
@@ -310,16 +307,18 @@ def run_sanity_check(model, processor, train_loader, device):
 
 
 def finetune():
-    HOME = os.path.expanduser("~")
-    model_dir = os.path.join(HOME, "Mask2former")
-    train_image_dir = os.path.join(HOME, "Mask2former_data", "data", "semantic_views_train")
-    train_mask_dir = os.path.join(HOME, "Mask2former_data", "data", "ins_masks_train")
-    train_class_map = os.path.join(HOME, "Mask2former_data", "data", "class_map_train.json")
-    val_image_dir = os.path.join(HOME, "Mask2former_data", "data", "semantic_views_val")
-    val_mask_dir = os.path.join(HOME, "Mask2former_data", "data", "ins_masks_val")
-    val_class_map = os.path.join(HOME, "Mask2former_data", "data", "class_map_val.json")
-    save_dir = os.path.join(HOME, "Mask2former_data", "results", "models", "finetuned_instance_model_v4")
-    log_dir = os.path.join(HOME, "Mask2former_data", "results", "tensorboard_logs_ins")
+    model_dir = MODEL_DIR
+    train_image_dir = TRAIN_IMAGE_DIR
+    train_mask_dir = TRAIN_MASK_DIR
+    train_class_map = INSTANCE_CLASS_MAP_PATH
+    val_image_dir = VAL_IMAGE_DIR
+    val_mask_dir = VAL_MASK_DIR
+    val_class_map = os.path.join(DATA_ROOT, "class_map_val.json")
+    save_dir = SAVE_DIR
+    log_dir = LOG_DIR
+
+    os.makedirs(save_dir, exist_ok=True)
+    os.makedirs(log_dir, exist_ok=True)
 
     print("=" * 60)
     print("Mask2Former Instance Segmentation Fine-tuning (Linux)")
@@ -336,11 +335,19 @@ def finetune():
     )
     print(f"Set num_labels to {NUM_CLASSES}")
 
-    if hasattr(model, 'config') and CLASS_WEIGHTS is not None:
-        model.config.class_weight = CLASS_WEIGHTS
-        print(f"Set class weights: {CLASS_WEIGHTS}")
-
     device = get_device()
+
+    # 设置真正的类别权重（传给 nn.CrossEntropyLoss 的 weight 参数）
+    # empty_weight 形状: [num_classes + 1]，最后一个是 no-object 权重
+    if CLASS_WEIGHTS is not None:
+        class_weights_tensor = torch.tensor(CLASS_WEIGHTS, dtype=torch.float32)
+        # 保留原有的 no_object_weight（eos_coef，默认 0.1）
+        eos_coef = model.criterion.eos_coef
+        full_weights = torch.cat([class_weights_tensor, torch.tensor([eos_coef])])
+        model.criterion.empty_weight = full_weights.to(device)
+        print(f"Set per-class weights: {CLASS_WEIGHTS}")
+        print(f"Full criterion weights (with no-object): {model.criterion.empty_weight.tolist()}")
+
     model = model.to(device)
 
     # Step 2: 加载数据
@@ -381,7 +388,7 @@ def finetune():
 
     train_loader = DataLoader(
         train_dataset,
-        batch_size=4,
+        batch_size=7,
         shuffle=True,
         num_workers=4,
         pin_memory=True if device.type == "cuda" else False,
@@ -392,7 +399,7 @@ def finetune():
     if val_dataset and len(val_dataset) > 0:
         val_loader = DataLoader(
             val_dataset,
-            batch_size=4,
+            batch_size=7,
             shuffle=False,
             num_workers=4,
             pin_memory=True if device.type == "cuda" else False,
@@ -422,7 +429,7 @@ def finetune():
 
     print(f"\nTraining Configuration:")
     print(f"  Epochs: {num_epochs}")
-    print(f"  Batch size: 4")
+    print(f"  Batch size: 7")
     print(f"  Learning rate: 5e-5")
     print(f"  Image size: 1024x1024")
     print(f"  Number of classes: {NUM_CLASSES}")

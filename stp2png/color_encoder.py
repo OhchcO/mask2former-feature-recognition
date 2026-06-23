@@ -21,26 +21,33 @@
 """
 import json
 import math
+import os
 import numpy as np
 
-
-# 类型基值：5种类型均分 0-254，间隙=51
-TYPE_GAP = 51
-TYPE_R_BASE = {
-    0: 0,     # 平面:    R ∈ [0,  50]
-    1: 51,    # 圆柱面:  R ∈ [51, 101]
-    2: 102,   # 圆锥面:  R ∈ [102,152]
-    3: 153,   # 球面:    R ∈ [153,203]
-    4: 204,   # 其他面:  R ∈ [204,254]
-}
-
-TYPE_NAMES = {
-    0: "平面",
-    1: "圆柱面",
-    2: "圆锥面",
-    3: "球面",
-    4: "其他面",
-}
+# 优先从 config.py 导入，否则使用默认值
+try:
+    from scripts.config import (
+        ENCODER_TYPE_GAP as TYPE_GAP,
+        ENCODER_TYPE_R_BASE as TYPE_R_BASE,
+        ENCODER_TYPE_NAMES as TYPE_NAMES,
+    )
+except ImportError:
+    # 默认值（独立使用时）
+    TYPE_GAP = 51
+    TYPE_R_BASE = {
+        0: 0,     # 平面:    R ∈ [0,  50]
+        1: 51,    # 圆柱面:  R ∈ [51, 101]
+        2: 102,   # 圆锥面:  R ∈ [102,152]
+        3: 153,   # 球面:    R ∈ [153,203]
+        4: 204,   # 其他面:  R ∈ [204,254]
+    }
+    TYPE_NAMES = {
+        0: "平面",
+        1: "圆柱面",
+        2: "圆锥面",
+        3: "球面",
+        4: "其他面",
+    }
 
 
 class FaceColorEncoder:

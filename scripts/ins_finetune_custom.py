@@ -1,27 +1,19 @@
 # 实例分割训练
 # 输入：图片 + 实例掩码（每个实例不同像素值）+ class_map.json
+import sys
+import os
+sys.path.insert(0, os.path.dirname(__file__))
+from config import CLASS_NAMES, NUM_CLASSES, CLASS_WEIGHTS
+
 import torch
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from transformers import Mask2FormerForUniversalSegmentation, Mask2FormerImageProcessor
 from PIL import Image
-import os
 import json
 import numpy as np
 import time
 from tqdm import tqdm
-
-CLASS_NAMES = {
-    0: "Background",
-    1: "宽体槽",
-    2: "封闭槽",
-    3: "开放槽",
-    4: "孔"
-}
-
-NUM_CLASSES = len(CLASS_NAMES)
-
-CLASS_WEIGHTS = [0.0048, 0.7365, 0.9892, 2.5213, 0.7483]
 
 # 调试开关：True 时只取前12个样本快速验证，False 使用全量数据
 DEBUG_MODE = False
@@ -335,11 +327,18 @@ def finetune():
     )
     print(f"Set num_labels to {NUM_CLASSES}")
 
-    if hasattr(model, 'config') and CLASS_WEIGHTS is not None:
-        model.config.class_weight = CLASS_WEIGHTS
-        print(f"Set class weights: {CLASS_WEIGHTS}")
-
     device = get_device()
+
+    # 设置类别权重（传给 nn.CrossEntropyLoss 的 weight 参数）
+    # empty_weight 形状: [num_classes + 1]，最后一个是 no-object 权重
+    if CLASS_WEIGHTS is not None:
+        class_weights_tensor = torch.tensor(CLASS_WEIGHTS, dtype=torch.float32)
+        eos_coef = model.criterion.eos_coef
+        full_weights = torch.cat([class_weights_tensor, torch.tensor([eos_coef])])
+        model.criterion.empty_weight = full_weights.to(device)
+        print(f"Set per-class weights: {CLASS_WEIGHTS}")
+        print(f"Full criterion weights (with no-object): {model.criterion.empty_weight.tolist()}")
+
     model = model.to(device)
 
     # Step 2: 加载数据

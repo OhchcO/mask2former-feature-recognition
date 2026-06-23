@@ -4,7 +4,11 @@
 输入：语义灰度掩码文件夹
 输出：染色可视化图片
 """
+import sys
 import os
+sys.path.insert(0, os.path.dirname(__file__))
+from config import CLASS_NAMES, SEMANTIC_COLORS
+
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
@@ -14,22 +18,8 @@ from PIL import Image
 plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
 
-# 颜色定义（与verify_instance_labels.py一致）
-SEMANTIC_COLORS = {
-    0: [255, 255, 255],  # 背景 - 白色
-    1: [255, 165, 0],    # 宽体槽 - 橙色
-    2: [128, 0, 128],    # 封闭槽 - 紫色
-    3: [0, 255, 255],    # 开放槽 - 青色
-    4: [255, 0, 0],      # 孔 - 红色
-}
-
-SEMANTIC_NAMES = {
-    0: "背景",
-    1: "宽体槽",
-    2: "封闭槽",
-    3: "开放槽",
-    4: "孔",
-}
+# 别名（兼容代码中已有引用）
+SEMANTIC_NAMES = CLASS_NAMES
 
 
 def colorize_semantic_mask(semantic_mask):
