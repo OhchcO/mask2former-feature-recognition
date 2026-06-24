@@ -6,3 +6,5 @@ python scripts/ins_inference_mask_utils.py --image "E:\soft\code\Mask2former_dat
 python scripts/ins_inference_encoded.py --image "E:\soft\code\Mask2former_data\data_augmentation_0610\encoded_train\000021-0.png" --model_dir "E:\soft\code\results\models\finetuned_instance_model_v610_encoded"
 // 权重 610_encoded 实例分割推理 验证集
 python scripts/ins_inference_encoded.py --image "E:\soft\code\Mask2former_data\data_augmentation_0610\encoded_val\000117-0.png" --model_dir "E:\soft\code\results\models\finetuned_instance_model_v610_encoded"
+// tensorboard 
+tensorboard --logdir=E:/soft/code/Mask2former_data/results/tensorboard_logs_ins_v623/20260623_213404

@@ -1,26 +1,27 @@
-# 实例分割训练
+# 实例分割训练 (Linux版)
 # 输入：图片 + 实例掩码（每个实例不同像素值）+ class_map.json
-import sys
-import os
-sys.path.insert(0, os.path.dirname(__file__))
-from config import (  # type: ignore
-    CLASS_NAMES, NUM_CLASSES, CLASS_WEIGHTS,
-    TRAIN_IMAGE_DIR, TRAIN_MASK_DIR, VAL_IMAGE_DIR, VAL_MASK_DIR,
-    INSTANCE_CLASS_MAP_PATH, MODEL_DIR, SAVE_DIR, LOG_DIR,
-    BATCH_SIZE, LEARNING_RATE, NUM_EPOCHS, PATIENCE, WEIGHT_DECAY, SEED,
-)
-
 import torch
-import random
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from transformers import Mask2FormerForUniversalSegmentation, Mask2FormerImageProcessor
 from PIL import Image
+import os
 import json
 import numpy as np
 import time
-from datetime import datetime
 from tqdm import tqdm
+
+CLASS_NAMES = {
+    0: "Background",
+    1: "宽体槽",
+    2: "封闭槽",
+    3: "开放槽",
+    4: "孔"
+}
+
+NUM_CLASSES = len(CLASS_NAMES)
+
+CLASS_WEIGHTS = [0.0063, 1.0165, 1.0363, 1.9251, 1.0158]
 
 # 调试开关：True 时只取前12个样本快速验证，False 使用全量数据
 DEBUG_MODE = False
@@ -48,27 +49,12 @@ class InstanceSegmentationDataset(Dataset):
         # 匹配图片和掩码
         self.images = sorted([f for f in os.listdir(image_dir) if f.endswith('.png')])
         valid_pairs = []
-        empty_count = 0
         for img_name in self.images:
             mask_path = os.path.join(mask_dir, img_name)
             if os.path.exists(mask_path) and img_name in self.class_map:
-                mask_arr = np.array(Image.open(mask_path).convert("L"))
-                if np.any(mask_arr < 255):  # 至少有一个非背景像素
-                    valid_pairs.append(img_name)
-                else:
-                    empty_count += 1
+                valid_pairs.append(img_name)
         self.images = valid_pairs
-        print(f"Found {len(self.images)} valid images ({empty_count} empty masks skipped)")
-
-        # 构建 class_id → contiguous index 映射（如 5→0, 6→1, 7→2）
-        all_class_ids = set()
-        for img_name in self.images:
-            for class_id in self.class_map[img_name].values():
-                all_class_ids.add(class_id)
-        self.class_to_idx = {cid: idx for idx, cid in enumerate(sorted(all_class_ids))}
-        self.idx_to_name = CLASS_NAMES
-        print(f"Class ID mapping: {self.class_to_idx}")
-        print(f"Index to name: {self.idx_to_name}")
+        print(f"Found {len(self.images)} valid image-mask pairs with class_map entries")
 
     def __len__(self):
         return len(self.images)
@@ -90,7 +76,7 @@ class InstanceSegmentationDataset(Dataset):
         mask_np = np.array(mask)
         img_class_map = self.class_map[img_name]
 
-        # 获取所有实例ID，只排除背景255（0-254都是合法实例）
+        # 获取所有实例ID（0-254），排除背景255
         instance_ids = sorted([int(x) for x in np.unique(mask_np) if x < 255])
 
         mask_labels = []
@@ -101,10 +87,6 @@ class InstanceSegmentationDataset(Dataset):
             if str(inst_id) not in img_class_map:
                 continue
             class_id = int(img_class_map[str(inst_id)])
-            # 映射到连续索引（如 5→0, 6→1, 7→2）
-            if class_id not in self.class_to_idx:
-                continue
-            class_id = self.class_to_idx[class_id]
 
             # 生成该实例的二值掩码
             binary_mask = (mask_np == inst_id).astype(np.float32)
@@ -116,7 +98,6 @@ class InstanceSegmentationDataset(Dataset):
             inputs,
             torch.stack(mask_labels) if mask_labels else torch.zeros(1, *mask_np.shape, dtype=torch.float32),
             torch.stack(class_labels) if class_labels else torch.zeros(1, dtype=torch.int64),
-            img_name,
         )
 
 
@@ -128,8 +109,7 @@ def collate_fn(batch):
     # 每个样本的实例数量可能不同，不能直接stack，需要列表
     batch_mask_labels = [sample[1] for sample in batch]
     batch_class_labels = [sample[2] for sample in batch]
-    batch_img_names = [sample[3] for sample in batch]
-    return batch_inputs, batch_mask_labels, batch_class_labels, batch_img_names
+    return batch_inputs, batch_mask_labels, batch_class_labels
 
 
 def get_device():
@@ -179,7 +159,7 @@ def evaluate_model(model, processor, dataloader, device, num_classes, iou_thresh
     img_id = 0
 
     with torch.no_grad():
-        for inputs, mask_labels, class_labels, _ in tqdm(dataloader, desc="  Validating"):
+        for inputs, mask_labels, class_labels in tqdm(dataloader, desc="  Validating"):
             inputs = {k: v.to(device) for k, v in inputs.items()}
             batch_size = inputs["pixel_values"].shape[0]
             h, w = mask_labels[0].shape[1], mask_labels[0].shape[2]
@@ -230,7 +210,7 @@ def evaluate_model(model, processor, dataloader, device, num_classes, iou_thresh
                 gt_class_labels = class_labels[i]
                 for g_idx in range(len(gt_class_labels)):
                     cls = int(gt_class_labels[g_idx])
-                    if cls >= num_classes:
+                    if cls == 0 or cls >= num_classes:
                         continue
                     gt_mask = gt_mask_labels[g_idx].numpy() > 0.5
                     area = int(gt_mask.sum())
@@ -254,12 +234,13 @@ def evaluate_model(model, processor, dataloader, device, num_classes, iou_thresh
 
     # 没有预测或没有 GT 则返回 0
     if len(coco_annotations) == 0 or len(coco_results) == 0:
-        return 0.0, [0.0] * num_classes
+        return 0.0, [0.0] * (num_classes - 1)
 
     # 构建 COCO categories
     coco_categories = [
         {"id": cls_id, "name": name}
         for cls_id, name in CLASS_NAMES.items()
+        if cls_id != 0
     ]
 
     coco_gt = COCO()
@@ -276,16 +257,13 @@ def evaluate_model(model, processor, dataloader, device, num_classes, iou_thresh
     coco_eval = COCOeval(coco_gt, coco_dt, "segm")
     coco_eval.params.iouThrs = [iou_threshold]  # 只用 0.5
     coco_eval.params.maxDets = [1, 10, 100]
-    import contextlib
-    with open(os.devnull, 'w') as fnull:
-        with contextlib.redirect_stdout(fnull):
-            coco_eval.evaluate()
-            coco_eval.accumulate()
-            coco_eval.summarize()
+    coco_eval.evaluate()
+    coco_eval.accumulate()
+    coco_eval.summarize()
 
-    # 获取各类别 AP（过滤无效值-1.0）
+    # 获取各类别 AP（跳过背景，过滤无效值-1.0）
     ap_per_class = []
-    for cls_id in range(num_classes):
+    for cls_id in range(1, num_classes):
         cls_idx = coco_eval.params.catIds.index(cls_id) if cls_id in coco_eval.params.catIds else -1
         if cls_idx >= 0:
             prec = coco_eval.eval['precision'][0, :, cls_idx, 0, -1]
@@ -302,26 +280,20 @@ def evaluate_model(model, processor, dataloader, device, num_classes, iou_thresh
 
 
 def run_sanity_check(model, processor, train_loader, device):
-    if len(train_loader.dataset) == 0:
-        print("\n[Sanity Check] Skipped: no training samples")
-        return
-
     print("\n" + "=" * 60)
     print("[Sanity Check] Inspecting one training batch")
     print("=" * 60)
 
     model.eval()
     train_batch = next(iter(train_loader))
-    inputs, mask_labels, class_labels, img_names = train_batch
+    inputs, mask_labels, class_labels = train_batch
     inputs = {k: v.to(device) for k, v in inputs.items()}
 
-    idx_to_name = train_loader.dataset.idx_to_name
     print(f"Train batch size: {len(mask_labels)}")
     for i in range(len(mask_labels)):
-        cls_ids = class_labels[i].cpu().numpy().tolist()
-        cls_names = [idx_to_name.get(c, f"Unknown({c})") for c in cls_ids]
+        cls_unique = class_labels[i].cpu().numpy().tolist()
         num_instances = mask_labels[i].shape[0]
-        print(f"  Sample {i}: {img_names[i]}, {num_instances} instances, classes={cls_names}")
+        print(f"  Sample {i}: {num_instances} instances, classes={cls_unique}")
 
     with torch.no_grad():
         # 转为列表格式传给模型
@@ -338,34 +310,35 @@ def run_sanity_check(model, processor, train_loader, device):
 
 
 def finetune():
-    # 设置随机种子
-    random.seed(SEED)
-    np.random.seed(SEED)
-    torch.manual_seed(SEED)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(SEED)
+    HOME = os.path.expanduser("~")
+    model_dir = os.path.join(HOME, "mask2former", "mask2former-feature-recognition")
 
-    model_dir = MODEL_DIR
-    train_image_dir = TRAIN_IMAGE_DIR
-    train_mask_dir = TRAIN_MASK_DIR
-    train_class_map = INSTANCE_CLASS_MAP_PATH
-    val_image_dir = VAL_IMAGE_DIR
-    val_mask_dir = VAL_MASK_DIR
-    val_class_map = INSTANCE_CLASS_MAP_PATH
-    save_dir = SAVE_DIR
-    log_dir = LOG_DIR
+    # 训练集
+    # train_image_dir = os.path.join(HOME, "mask2former_data", "data_24", "encoded_train")
+    train_image_dir = os.path.join(HOME, "mask2former_data", "data_24", "semantic_views_train")
+    train_mask_dir = os.path.join(HOME, "mask2former_data", "data_24", "masks_train")
+    train_class_map = os.path.join(HOME, "mask2former_data", "data_24", "class_map_train.json")
 
-    # 创建时间戳子目录，每次训练独立存放
-    run_name = datetime.now().strftime("%Y%m%d_%H%M%S")
-    save_dir = os.path.join(save_dir, run_name)
-    log_dir = os.path.join(log_dir, run_name)
+    # 验证集
+    # val_image_dir = os.path.join(HOME, "mask2former_data", "data_24", "encoded_val")
+    val_image_dir = os.path.join(HOME, "mask2former_data", "data_24", "semantic_views_val")
+    val_mask_dir = os.path.join(HOME, "mask2former_data", "data_24", "masks_val")
+    val_class_map = os.path.join(HOME, "mask2former_data", "data_24", "class_map_val.json")
+
+    # 输出目录保持不变
+    save_dir = os.path.join(HOME, "mask2former_data", "results", "models", "finetuned_instance_model_v61024_y")
+    log_dir = os.path.join(HOME, "mask2former_data", "results", "tensorboard_logs_ins_v61024_y")
+
+    os.makedirs(save_dir, exist_ok=True)
+    os.makedirs(log_dir, exist_ok=True)
 
     print("=" * 60)
-    print("Mask2Former Instance Segmentation Fine-tuning")
+    print("Mask2Former Instance Segmentation Fine-tuning (Linux)")
     print("=" * 60)
 
     # Step 1: 加载模型
     print("\n[Step 1/6] Loading pretrained model...")
+    global processor
     processor = Mask2FormerImageProcessor.from_pretrained(model_dir)
     model = Mask2FormerForUniversalSegmentation.from_pretrained(
         model_dir,
@@ -376,14 +349,15 @@ def finetune():
 
     device = get_device()
 
-    # 设置类别权重（传给 nn.CrossEntropyLoss 的 weight 参数）
+    # 设置真正的类别权重（传给 nn.CrossEntropyLoss 的 weight 参数）
     # empty_weight 形状: [num_classes + 1]，最后一个是 no-object 权重
     if CLASS_WEIGHTS is not None:
         class_weights_tensor = torch.tensor(CLASS_WEIGHTS, dtype=torch.float32)
+        # 保留原有的 no_object_weight（eos_coef，默认 0.1）
         eos_coef = model.criterion.eos_coef
         full_weights = torch.cat([class_weights_tensor, torch.tensor([eos_coef])])
         model.criterion.empty_weight = full_weights.to(device)
-        # print(f"Set per-class weights: {CLASS_WEIGHTS}")
+        print(f"Set per-class weights: {CLASS_WEIGHTS}")
         print(f"Full criterion weights (with no-object): {model.criterion.empty_weight.tolist()}")
 
     model = model.to(device)
@@ -426,7 +400,7 @@ def finetune():
 
     train_loader = DataLoader(
         train_dataset,
-        batch_size=BATCH_SIZE,
+        batch_size=7,
         shuffle=True,
         num_workers=4,
         pin_memory=True if device.type == "cuda" else False,
@@ -437,9 +411,9 @@ def finetune():
     if val_dataset and len(val_dataset) > 0:
         val_loader = DataLoader(
             val_dataset,
-            batch_size=BATCH_SIZE,
+            batch_size=7,
             shuffle=False,
-            num_workers=0,
+            num_workers=4,
             pin_memory=True if device.type == "cuda" else False,
             collate_fn=collate_fn,
         )
@@ -455,18 +429,20 @@ def finetune():
 
     optimizer = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
-        lr=LEARNING_RATE,
-        weight_decay=WEIGHT_DECAY
+        lr=5e-5,
+        weight_decay=0.01
     )
 
+    num_epochs = 30
+    patience = 10  # 早停耐心值：mAP连续不提升则停止
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=NUM_EPOCHS, eta_min=1e-6
+        optimizer, T_max=num_epochs, eta_min=1e-6
     )
 
     print(f"\nTraining Configuration:")
-    print(f"  Epochs: {NUM_EPOCHS}")
-    print(f"  Batch size: {BATCH_SIZE}")
-    print(f"  Learning rate: {LEARNING_RATE}")
+    print(f"  Epochs: {num_epochs}")
+    print(f"  Batch size: 7")
+    print(f"  Learning rate: 5e-5")
     print(f"  Image size: 1024x1024")
     print(f"  Number of classes: {NUM_CLASSES}")
     print(f"  Device: {device}")
@@ -485,8 +461,10 @@ def finetune():
     print("=" * 60)
 
     # 初始化TensorBoard（每次运行创建带时间戳的子文件夹）
-    writer = SummaryWriter(log_dir=log_dir)
-    print(f"TensorBoard logs: {log_dir}")
+    from datetime import datetime
+    run_name = datetime.now().strftime("%Y%m%d_%H%M%S")
+    writer = SummaryWriter(log_dir=os.path.join(log_dir, run_name))
+    print(f"TensorBoard logs: {log_dir}/{run_name}")
 
     best_loss = float('inf')
     best_mAP = 0.0
@@ -494,13 +472,13 @@ def finetune():
     training_history = []
     start_time = time.time()
 
-    for epoch in range(NUM_EPOCHS):
+    for epoch in range(num_epochs):
         model.train()
         total_loss = 0
         epoch_start_time = time.time()
 
-        pbar = tqdm(train_loader, desc=f"Epoch [{epoch+1}/{NUM_EPOCHS}]", leave=False)
-        for batch_idx, (inputs, mask_labels, class_labels, _) in enumerate(pbar):
+        pbar = tqdm(train_loader, desc=f"Epoch [{epoch+1}/{num_epochs}]", leave=False)
+        for batch_idx, (inputs, mask_labels, class_labels) in enumerate(pbar):
             inputs = {k: v.to(device) for k, v in inputs.items()}
             mask_labels_device = [m.to(device) for m in mask_labels]
             class_labels_device = [c.to(device) for c in class_labels]
@@ -525,39 +503,19 @@ def finetune():
         epoch_time = time.time() - epoch_start_time
         current_lr = scheduler.get_last_lr()[0]
 
-        val_loss = None
         val_mAP = None
         val_ap_per_class = None
 
         if val_loader:
             print(f"\n  Running validation...")
-            # 计算验证损失
-            model.eval()
-            val_total_loss = 0
-            with torch.no_grad():
-                for v_inputs, v_mask_labels, v_class_labels, _ in val_loader:
-                    v_inputs = {k: v.to(device) for k, v in v_inputs.items()}
-                    v_mask_device = [m.to(device) for m in v_mask_labels]
-                    v_class_device = [c.to(device) for c in v_class_labels]
-                    v_outputs = model(
-                        pixel_values=v_inputs["pixel_values"],
-                        mask_labels=v_mask_device,
-                        class_labels=v_class_device
-                    )
-                    val_total_loss += v_outputs.loss.item()
-            val_loss = val_total_loss / len(val_loader)
-            model.train()
-
-            # 计算 mAP
             val_mAP, val_ap_per_class = evaluate_model(
                 model, processor, val_loader, device, NUM_CLASSES
             )
-            print(f"  Validation - Loss: {val_loss:.4f}, mAP@0.5: {val_mAP:.4f}")
+            print(f"  Validation - mAP@0.5: {val_mAP:.4f}")
 
         training_history.append({
             'epoch': epoch + 1,
             'train_loss': avg_train_loss,
-            'val_loss': val_loss,
             'val_mAP': val_mAP,
             'val_ap_per_class': val_ap_per_class,
             'lr': current_lr,
@@ -566,18 +524,16 @@ def finetune():
 
         # TensorBoard记录
         writer.add_scalar('Loss/train', avg_train_loss, epoch + 1)
-        if val_loss is not None:
-            writer.add_scalar('Loss/val', val_loss, epoch + 1)
         writer.add_scalar('LR', current_lr, epoch + 1)
         if val_mAP is not None:
             writer.add_scalar('mAP/val', val_mAP, epoch + 1)
         if val_ap_per_class is not None:
-            for idx, cls_id in enumerate(range(NUM_CLASSES)):
+            for idx, cls_id in enumerate(range(1, NUM_CLASSES)):
                 cls_name = CLASS_NAMES[cls_id]
                 if not np.isnan(val_ap_per_class[idx]):
                     writer.add_scalar(f'AP_per_class/{cls_name}', val_ap_per_class[idx], epoch + 1)
 
-        print(f"Epoch [{epoch+1}/{NUM_EPOCHS}] completed, Train Loss: {avg_train_loss:.4f}, LR: {current_lr:.2e}, Time: {epoch_time:.1f}s")
+        print(f"Epoch [{epoch+1}/{num_epochs}] completed, Train Loss: {avg_train_loss:.4f}, LR: {current_lr:.2e}, Time: {epoch_time:.1f}s")
 
         if avg_train_loss < best_loss:
             best_loss = avg_train_loss
@@ -594,8 +550,8 @@ def finetune():
             print(f"  -> New best mAP@0.5: {best_mAP:.4f}, model saved")
         else:
             no_improve_epochs += 1
-            if no_improve_epochs >= PATIENCE:
-                print(f"\n  Early stopping: mAP not improved for {PATIENCE} epochs")
+            if no_improve_epochs >= patience:
+                print(f"\n  Early stopping: mAP not improved for {patience} epochs")
                 break
 
     total_time = time.time() - start_time
@@ -619,25 +575,24 @@ def finetune():
     print("\n" + "=" * 60)
     print("Training History")
     print("=" * 60)
-    header = f"{'Epoch':<8}{'TrainLoss':<12}{'ValLoss':<12}{'mAP@0.5':<10}{'LR':<12}{'Time':<8}"
+    header = f"{'Epoch':<8}{'Loss':<12}{'mAP@0.5':<10}{'LR':<12}{'Time':<8}"
     print(header)
     print("-" * 60)
 
     for record in training_history:
         if record['epoch'] % 5 == 0 or record['epoch'] == 1:
             loss_str = f"{record['train_loss']:.4f}"
-            val_loss_str = f"{record['val_loss']:.4f}" if record['val_loss'] is not None else "N/A"
             mAP_str = f"{record['val_mAP']:.4f}" if record['val_mAP'] is not None else "N/A"
             lr_str = f"{record['lr']:.2e}"
             time_str = f"{record['time']:.1f}s"
-            print(f"{record['epoch']:<8}{loss_str:<12}{val_loss_str:<12}{mAP_str:<10}{lr_str:<12}{time_str:<8}")
+            print(f"{record['epoch']:<8}{loss_str:<12}{mAP_str:<10}{lr_str:<12}{time_str:<8}")
 
     if val_loader and training_history[-1]['val_ap_per_class'] is not None:
         print("\n" + "=" * 60)
         print("Final Validation - AP per Class (IoU=0.5)")
         print("=" * 60)
         final_ap = training_history[-1]['val_ap_per_class']
-        for idx, cls_id in enumerate(range(NUM_CLASSES)):
+        for idx, cls_id in enumerate(range(1, NUM_CLASSES)):
             cls_name = CLASS_NAMES[cls_id]
             ap_val = final_ap[idx]
             if not np.isnan(ap_val):

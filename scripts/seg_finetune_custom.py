@@ -268,16 +268,11 @@ def finetune():
     )
     print(f"Set num_labels to {NUM_CLASSES} (was 133 for COCO)")
     
+    if hasattr(model, 'config') and CLASS_WEIGHTS is not None:
+        model.config.class_weight = CLASS_WEIGHTS
+        print(f"Set class weights: {CLASS_WEIGHTS}")
+    
     device = get_device()
-
-    if CLASS_WEIGHTS is not None:
-        class_weights_tensor = torch.tensor(CLASS_WEIGHTS, dtype=torch.float32)
-        eos_coef = model.criterion.eos_coef
-        full_weights = torch.cat([class_weights_tensor, torch.tensor([eos_coef])])
-        model.criterion.empty_weight = full_weights.to(device)
-        print(f"Set per-class weights: {CLASS_WEIGHTS}")
-        print(f"Full criterion weights (with no-object): {model.criterion.empty_weight.tolist()}")
-
     model = model.to(device)
     
     print("\n[Step 2/6] Preparing data...")

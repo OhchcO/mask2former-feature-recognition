@@ -11,15 +11,15 @@ HOME = os.path.expanduser("~")
 
 if os.name == "nt":
     # Windows
-    DATA_ROOT = "E:/soft/data/分割数据集"
-    TRAIN_IMAGE_DIR = f"{DATA_ROOT}/train/images"
-    TRAIN_MASK_DIR = f"{DATA_ROOT}/train/masks"
-    VAL_IMAGE_DIR = f"{DATA_ROOT}/val/images"
-    VAL_MASK_DIR = f"{DATA_ROOT}/val/masks"
-    INSTANCE_CLASS_MAP_PATH = f"{DATA_ROOT}/train/class_map.json"
+    DATA_ROOT = r"E:\soft\code\Mask2former_data\test-instance-0623"
+    TRAIN_IMAGE_DIR = f"{DATA_ROOT}/train_encoded_views"
+    TRAIN_MASK_DIR = f"{DATA_ROOT}/train_masks"
+    VAL_IMAGE_DIR = f"{DATA_ROOT}/val_encoded_views"
+    VAL_MASK_DIR = f"{DATA_ROOT}/val_masks"
+    INSTANCE_CLASS_MAP_PATH = f"{DATA_ROOT}/class_map.json"
     MODEL_DIR = r"E:\soft\code\Mask2former"
-    SAVE_DIR = r"E:\soft\code\Mask2former_data\results\models\finetuned_instance_model_v4"
-    LOG_DIR = r"E:\soft\code\Mask2former_data\results\tensorboard_logs_ins"
+    SAVE_DIR = r"E:\soft\code\Mask2former_data\results\models\finetuned_instance_model_v623"
+    LOG_DIR = r"E:\soft\code\Mask2former_data\results\tensorboard_logs_ins_v623"
 else:
     # Linux
     DATA_ROOT = os.path.join(HOME, "mask2former_data", "data_24")
@@ -35,54 +35,46 @@ else:
 # ============================================================
 # 类别配置（换数据集只改这里）
 # ============================================================
-NUM_CLASSES = 4  # 不含背景（背景=0 自动处理）
+NUM_CLASSES = 3  # 不含背景（背景=0 自动处理）
 
-# 灰度掩码值 → 类别ID 映射
-# key: 掩码图中的像素值, value: 模型训练用的类别ID
-LABEL_MAPPING = {
-    255: 0,   # 背景 → 0
-    0: 1,     # 宽体槽 → 1
-    1: 2,     # 封闭槽 → 2
-    2: 3,     # 开放槽 → 3
-    3: 4,     # 孔 → 4
-}
-
-# 类别名称（ID → 名称）
+# 类别名称（索引 → 名称，从0开始，不含背景）
 CLASS_NAMES = {
-    0: "Background",
-    1: "宽体槽",
-    2: "封闭槽",
-    3: "开放槽",
-    4: "孔"
+    0: "开放型腔",
+    1: "封闭型腔",
+    2: "复合型腔",
 }
 
-# 类别权重（从训练集自动计算，Median Frequency Balancing）
-def _calculate_class_weights(mask_dir, num_classes, bg_value=255):
-    """从掩码文件夹自动计算类别权重"""
+# 类别权重（从 class_map.json 自动计算，Median Frequency Balancing）
+def _calculate_class_weights(class_map_path, num_classes):
+    """从 class_map.json 自动计算类别权重（实例分割专用）"""
+    import json
     import numpy as np
-    from PIL import Image
 
-    if not os.path.exists(mask_dir):
-        print(f"Warning: mask_dir not found ({mask_dir}), using uniform weights")
+    if not os.path.exists(class_map_path):
+        print(f"Warning: class_map not found ({class_map_path}), using uniform weights")
         return [1.0] * num_classes
 
-    mask_files = [f for f in os.listdir(mask_dir) if f.endswith('.png')]
-    if not mask_files:
-        print(f"Warning: no masks found in {mask_dir}, using uniform weights")
-        return [1.0] * num_classes
+    with open(class_map_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
 
-    total_pixels = 0
+    # 收集所有出现的类别ID，映射到连续范围
+    all_class_ids = set()
+    for img_name, instances in data.items():
+        all_class_ids.update(instances.values())
+    sorted_classes = sorted(all_class_ids)
+    class_to_idx = {cid: idx for idx, cid in enumerate(sorted_classes)}
+
     class_counts = np.zeros(num_classes)
+    for img_name, instances in data.items():
+        for instance_id, class_id in instances.items():
+            if class_id in class_to_idx:
+                class_counts[class_to_idx[class_id]] += 1
 
-    for mask_file in mask_files:
-        mask = np.array(Image.open(os.path.join(mask_dir, mask_file)).convert("L"))
-        mapped = mask.copy()
-        mapped[mask == bg_value] = 0
-        for cls in range(num_classes):
-            class_counts[cls] += np.sum(mapped == cls)
-        total_pixels += mask.size
+    total = class_counts.sum()
+    if total == 0:
+        return [1.0] * num_classes
 
-    class_pct = class_counts / total_pixels
+    class_pct = class_counts / total
     present = class_counts > 0
     median_freq = np.median(class_pct[present])
 
@@ -90,29 +82,22 @@ def _calculate_class_weights(mask_dir, num_classes, bg_value=255):
     weights[present] = median_freq / class_pct[present]
     weights = weights / weights[present].sum() * present.sum()
 
-    print(f"Class weights (from {len(mask_files)} masks): {[round(w, 4) for w in weights.tolist()]}")
+    print(f"Class weights (from {len(data)} images, {int(total)} instances): "
+          f"{[round(w, 4) for w in weights.tolist()]}")
     return weights.tolist()
 
 
-CLASS_WEIGHTS = _calculate_class_weights(TRAIN_MASK_DIR, num_classes=NUM_CLASSES + 1)
-
-# 可视化颜色（类别ID → RGB）
-SEMANTIC_COLORS = {
-    0: [255, 255, 255],  # 背景 - 白色
-    1: [255, 165, 0],    # 宽体槽 - 橙色
-    2: [128, 0, 128],    # 封闭槽 - 紫色
-    3: [0, 255, 255],    # 开放槽 - 青色
-    4: [255, 0, 0],      # 孔 - 红色
-}
+CLASS_WEIGHTS = _calculate_class_weights(INSTANCE_CLASS_MAP_PATH, NUM_CLASSES)
 
 # ============================================================
 # 训练超参
 # ============================================================
 BATCH_SIZE = 4
-LEARNING_RATE = 2e-5
-NUM_EPOCHS = 20
+LEARNING_RATE = 5e-5
+NUM_EPOCHS = 30
 IMG_SIZE = (1024, 1024)
 WEIGHT_DECAY = 0.01
+PATIENCE = 10  # 早停耐心值：mAP连续不提升则停止
 WARMUP_RATIO = 0.1
 VAL_SPLIT = 0.2
 SEED = 42

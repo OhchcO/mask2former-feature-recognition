@@ -2,12 +2,7 @@ r"""
 实例分割推理脚本（编码图版本）。
 
 面信息编码在图像通道中：
-- R 通道：面的几何类型
-    20  = 平面
-    70  = 圆柱面
-    120 = 圆锥面
-    170 = 球面
-    220 = 其他面
+- R 通道：面的几何类型（0/51/102/153/204，对应平面/圆柱面/圆锥面/球面/其他面）
 - G + B 通道：面 ID（G*256 + B，每个不同值代表一个面）
 
 无需单独的 face_id_image。
@@ -37,32 +32,51 @@ from transformers import Mask2FormerForUniversalSegmentation, Mask2FormerImagePr
 plt.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "Arial Unicode MS"]
 plt.rcParams["axes.unicode_minus"] = False
 
-# 分割类别
-CLASS_NAMES = {
-    0: "Background",
-    1: "宽体槽",
-    2: "封闭槽",
-    3: "开放槽",
-    4: "孔",
-}
+import sys
+import os
+sys.path.insert(0, os.path.dirname(__file__))
+from config import (  # type: ignore
+    CLASS_NAMES, CLASS_WEIGHTS,
+    ENCODER_TYPE_GAP, ENCODER_TYPE_R_BASE, ENCODER_TYPE_NAMES,
+)
 
-CLASS_COLORS = {
-    1: np.array([255, 0, 0], dtype=np.uint8),
-    2: np.array([0, 255, 0], dtype=np.uint8),
-    3: np.array([0, 0, 255], dtype=np.uint8),
-    4: np.array([255, 255, 0], dtype=np.uint8),
-}
+# 类别颜色（自动生成，用于可视化）
+COLOR_PALETTE = [
+    np.array([255, 0, 0], dtype=np.uint8),     # 红
+    np.array([0, 255, 0], dtype=np.uint8),     # 绿
+    np.array([0, 0, 255], dtype=np.uint8),     # 蓝
+    np.array([255, 255, 0], dtype=np.uint8),   # 黄
+    np.array([255, 0, 255], dtype=np.uint8),   # 品红
+    np.array([0, 255, 255], dtype=np.uint8),   # 青
+    np.array([128, 0, 255], dtype=np.uint8),   # 紫
+    np.array([255, 128, 0], dtype=np.uint8),   # 橙
+]
+CLASS_COLORS = {cls_id: COLOR_PALETTE[i % len(COLOR_PALETTE)]
+                for i, cls_id in enumerate(CLASS_NAMES.keys())}
 
-# R 通道 → 面的几何类型
-FACE_TYPE_MAP = {
-    20:  "平面",
-    70:  "圆柱面",
-    120: "圆锥面",
-    170: "球面",
-    220: "其他面",
-}
+# R 通道 → 面的几何类型（范围匹配，从 config 生成）
+def _build_r_ranges():
+    """构建 R 值范围 → 面类型名称 的映射"""
+    from config import ENCODER_TYPE_GAP, ENCODER_TYPE_R_BASE, ENCODER_TYPE_NAMES
+    ranges = []
+    for type_id, r_base in sorted(ENCODER_TYPE_R_BASE.items()):
+        r_max = r_base + ENCODER_TYPE_GAP - 1
+        ranges.append((r_base, r_max, ENCODER_TYPE_NAMES[type_id]))
+    return ranges
 
-DEFAULT_MODEL_DIR = r"E:\soft\code\results\models\finetuned_instance_model_v610"
+_R_RANGES = _build_r_ranges()
+
+def get_face_type_name(r_value):
+    """根据 R 值返回面类型名称（范围匹配）"""
+    for r_min, r_max, name in _R_RANGES:
+        if r_min <= r_value <= r_max:
+            return name
+    return f"未知({r_value})"
+
+# 兼容旧接口
+FACE_TYPE_MAP = {v: ENCODER_TYPE_NAMES[k] for k, v in ENCODER_TYPE_R_BASE.items()}
+FACE_TYPE_R_MAP = ENCODER_TYPE_R_BASE
+
 DEFAULT_OUTPUT_DIR = r"E:\soft\code\Mask2former\results\visualizations\instance_inference_encoded"
 
 
@@ -75,15 +89,13 @@ def get_device(device_name="auto"):
 def build_legend_patches():
     patches = []
     for class_id, class_name in CLASS_NAMES.items():
-        if class_id == 0:
-            continue
         color = CLASS_COLORS[class_id] / 255.0
         patches.append(mpatches.Patch(color=color, label=f"{class_id}={class_name}"))
     return patches
 
 
 def colorize_class_mask(class_mask):
-    colored = np.zeros((*class_mask.shape, 3), dtype=np.uint8)
+    colored = np.full((*class_mask.shape, 3), 255, dtype=np.uint8)  # 白色背景(255)
     for class_id, color in CLASS_COLORS.items():
         colored[class_mask == class_id] = color
     return colored
@@ -155,14 +167,14 @@ def extract_faces_from_encoded_image(image_rgb, min_area=10):
         face_masks[face_id] = {
             "mask": face_mask,
             "face_type": dominant_face_type,
-            "face_type_name": FACE_TYPE_MAP.get(dominant_face_type, f"未知({dominant_face_type})"),
+            "face_type_name": get_face_type_name(dominant_face_type),
             "area": area,
         }
         face_type_counts[dominant_face_type] += 1
 
     print(f"从编码图提取到 {len(face_masks)} 个面 (min_area={min_area})")
     for ft, cnt in sorted(face_type_counts.items()):
-        print(f"  {FACE_TYPE_MAP.get(ft, f'未知({ft})')}: {cnt} 个面")
+        print(f"  {get_face_type_name(ft)}: {cnt} 个面")
     return face_masks
 
 
@@ -180,7 +192,7 @@ def postprocess_with_encoded_faces(raw_segmentation, segments_info, face_masks, 
     """
     info_by_raw_id = {int(s["id"]): s for s in segments_info}
     instance_mask = np.zeros_like(raw_segmentation, dtype=np.uint16)
-    class_mask = np.zeros_like(raw_segmentation, dtype=np.uint8)
+    class_mask = np.full_like(raw_segmentation, 255, dtype=np.uint8)  # 255=背景
     class_map = {}
 
     empty_faces = 0
@@ -214,9 +226,6 @@ def postprocess_with_encoded_faces(raw_segmentation, segments_info, face_masks, 
 
         pred_class = int(segment["label_id"])
         score = float(segment.get("score", 0.0))
-
-        if pred_class == 0:
-            continue
 
         instance_mask[face_mask_bool] = new_instance_id
         class_mask[face_mask_bool] = pred_class
@@ -266,7 +275,7 @@ def visualize(image, unc_image, raw_instance_mask, raw_class_mask,
     raw_instance_color = colorize_instance_mask(raw_instance_mask)
     raw_class_color = colorize_class_mask(raw_class_mask)
     raw_overlay = raw_class_color.astype(np.float32) / 255.0
-    raw_overlay[raw_class_mask == 0] = np.nan
+    raw_overlay[raw_class_mask == 255] = np.nan  # 255=背景，设为透明
 
     if processed_instance_mask is None or processed_class_mask is None:
         fig, axes = plt.subplots(1, 4, figsize=(22, 5))
@@ -289,7 +298,7 @@ def visualize(image, unc_image, raw_instance_mask, raw_class_mask,
         proc_instance_color = colorize_instance_mask(processed_instance_mask)
         proc_class_color = colorize_class_mask(processed_class_mask)
         proc_overlay = proc_class_color.astype(np.float32) / 255.0
-        proc_overlay[processed_class_mask == 0] = np.nan
+        proc_overlay[processed_class_mask == 255] = np.nan  # 255=背景，设为透明
 
         fig, axes = plt.subplots(2, 4, figsize=(22, 10))
         axes[0, 0].imshow(image)
@@ -340,7 +349,7 @@ def print_face_summary(face_masks):
         ft_counts[face_info["face_type"]] += 1
     print(f"  总面数: {len(face_masks)}")
     for ft, cnt in sorted(ft_counts.items()):
-        print(f"  R={ft:>3} {FACE_TYPE_MAP.get(ft, f'未知'):>6}: {cnt} 个面")
+        print(f"  R={ft:>3} {get_face_type_name(ft):>6}: {cnt} 个面")
 
 
 def format_class_stats(class_map, title):
@@ -363,18 +372,15 @@ def format_class_stats(class_map, title):
 
     print("\n类别实例统计:")
     for class_id in sorted(CLASS_NAMES.keys()):
-        if class_id == 0:
-            continue
         print(f"  类别 {class_id}({CLASS_NAMES[class_id]}): {class_counts[class_id]} 个实例")
 
 
 # ---------------------------------------------------------------------------
 # 主推理函数
 # ---------------------------------------------------------------------------
-def run_inference(image_path, unc_image_path=None, model_dir=DEFAULT_MODEL_DIR,
+def run_inference(image_path, unc_image_path=None, model_dir=None,
                   output_dir=DEFAULT_OUTPUT_DIR, threshold=0.5, mask_threshold=0.5,
                   min_ratio=0.5, min_face_area=10, device_name="auto"):
-
     print("加载实例分割模型...")
     processor = Mask2FormerImageProcessor.from_pretrained(model_dir)
     model = Mask2FormerForUniversalSegmentation.from_pretrained(model_dir)
@@ -419,17 +425,18 @@ def run_inference(image_path, unc_image_path=None, model_dir=DEFAULT_MODEL_DIR,
         raw_segmentation = raw_segmentation.cpu().numpy()
     segments_info = result["segments_info"]
 
-    # Step 3: 构建原始实例 mask（不做面后处理）
+    # Step 3: 构建原始实例 mask（按分数过滤，排除低置信度背景误检）
     raw_instance_mask = np.zeros_like(raw_segmentation, dtype=np.uint16)
-    raw_class_mask = np.zeros_like(raw_segmentation, dtype=np.uint8)
+    raw_class_mask = np.full_like(raw_segmentation, 255, dtype=np.uint8)  # 255=背景
     raw_class_map = {}
 
+    min_score = threshold  # 用 threshold 同时过滤低置信度
     new_id = 1
     for segment in sorted(segments_info, key=lambda x: x["id"]):
         raw_id = int(segment["id"])
         class_id = int(segment["label_id"])
         score = float(segment.get("score", 0.0))
-        if class_id == 0:
+        if score < min_score:
             continue
         bin_mask = raw_segmentation == raw_id
         area = int(bin_mask.sum())
@@ -512,7 +519,7 @@ if __name__ == "__main__":
                         help="编码图像路径 (R=面几何类型, GB=面ID)")
     parser.add_argument("--unc_image", type=str, default=None,
                         help="叠加底图路径，不传则自动使用灰度图")
-    parser.add_argument("--model_dir", type=str, default=DEFAULT_MODEL_DIR,
+    parser.add_argument("--model_dir", type=str, required=True,
                         help="微调后的实例分割模型目录")
     parser.add_argument("--output_dir", type=str, default=DEFAULT_OUTPUT_DIR,
                         help="输出目录")
