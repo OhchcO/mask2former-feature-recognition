@@ -1,0 +1,27 @@
+远程可退出，不会间断 下载screen
+ubuntu 
+    sudo apt update
+    sudo apt install screen -y   #安装
+    screen --version    #验证
+    creen -S train  #新建会话
+    python your_train_script.py #运行代码
+    # 快捷键：Ctrl+A → 松开 → 按 D 退出会话
+    screen -r train #恢复会话
+    screen -ls  #查看所有会话
+
+查看GPU占用 下载gpustat
+ubuntu
+    pip install gpustat #下载
+    gpustat -i 1    #使用
+
+tensorboard
+tensorboard --logdir ~/mask2former_data/results/tensorboard_logs_ins 
+
+解压
+cd /root/mask2former_data/
+unzip -n data_augmentation_0610.zip
+
+训练
+conda activate mask2former
+cd /root/mask2former/mask2former-feature-recognition
+python scripts/ins_finetune_custom_linux.py
