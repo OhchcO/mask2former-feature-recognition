@@ -384,8 +384,10 @@ def finetune():
     sys.stdout = tee
     sys.stderr = tee
 
+
     print("=" * 60)
     print("Mask2Former Instance Segmentation Fine-tuning")
+    print(f"Log file: {os.path.join(log_dir, 'train.log')}")
     print("=" * 60)
 
     # Step 1: 加载模型
