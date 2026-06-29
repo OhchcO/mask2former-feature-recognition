@@ -6,8 +6,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 from config import (  # type: ignore
     CLASS_NAMES, NUM_CLASSES, CLASS_WEIGHTS,
     TRAIN_IMAGE_DIR, TRAIN_MASK_DIR, VAL_IMAGE_DIR, VAL_MASK_DIR,
-    INSTANCE_CLASS_MAP_PATH, MODEL_DIR, SAVE_DIR, LOG_DIR,
-    BATCH_SIZE, LEARNING_RATE, NUM_EPOCHS, PATIENCE, WEIGHT_DECAY, SEED,
+    INSTANCE_CLASS_MAP_PATH, VAL_CLASS_MAP_PATH, MODEL_DIR, SAVE_DIR, LOG_DIR,
+    BATCH_SIZE, LEARNING_RATE, NUM_EPOCHS, PATIENCE, WEIGHT_DECAY, SEED, CLASS_ID_MAP,
 )
 
 import torch
@@ -60,12 +60,8 @@ class InstanceSegmentationDataset(Dataset):
         self.images = valid_pairs
         print(f"Found {len(self.images)} valid images ({empty_count} empty masks skipped)")
 
-        # 构建 class_id → contiguous index 映射（如 5→0, 6→1, 7→2）
-        all_class_ids = set()
-        for img_name in self.images:
-            for class_id in self.class_map[img_name].values():
-                all_class_ids.add(class_id)
-        self.class_to_idx = {cid: idx for idx, cid in enumerate(sorted(all_class_ids))}
+        # 使用 config 中定义的显式映射
+        self.class_to_idx = CLASS_ID_MAP
         self.idx_to_name = CLASS_NAMES
         print(f"Class ID mapping: {self.class_to_idx}")
         print(f"Index to name: {self.idx_to_name}")
@@ -337,6 +333,28 @@ def run_sanity_check(model, processor, train_loader, device):
     print("=" * 60)
 
 
+class Tee:
+    """同时输出到终端和文件"""
+    def __init__(self, filepath):
+        self.file = open(filepath, 'w', encoding='utf-8')
+        self.stdout = sys.stdout
+        self.stderr = sys.stderr
+
+    def write(self, data):
+        self.stdout.write(data)
+        self.file.write(data)
+        self.file.flush()
+
+    def flush(self):
+        self.stdout.flush()
+        self.file.flush()
+
+    def close(self):
+        self.file.close()
+        sys.stdout = self.stdout
+        sys.stderr = self.stderr
+
+
 def finetune():
     # 设置随机种子
     random.seed(SEED)
@@ -351,7 +369,7 @@ def finetune():
     train_class_map = INSTANCE_CLASS_MAP_PATH
     val_image_dir = VAL_IMAGE_DIR
     val_mask_dir = VAL_MASK_DIR
-    val_class_map = INSTANCE_CLASS_MAP_PATH
+    val_class_map = VAL_CLASS_MAP_PATH
     save_dir = SAVE_DIR
     log_dir = LOG_DIR
 
@@ -359,6 +377,12 @@ def finetune():
     run_name = datetime.now().strftime("%Y%m%d_%H%M%S")
     save_dir = os.path.join(save_dir, run_name)
     log_dir = os.path.join(log_dir, run_name)
+    os.makedirs(log_dir, exist_ok=True)
+
+    # 同时输出到终端和日志文件
+    tee = Tee(os.path.join(log_dir, "train.log"))
+    sys.stdout = tee
+    sys.stderr = tee
 
     print("=" * 60)
     print("Mask2Former Instance Segmentation Fine-tuning")
@@ -656,6 +680,9 @@ def finetune():
     print("\nUsage:")
     print(f'  processor = Mask2FormerImageProcessor.from_pretrained("{save_dir}")')
     print(f'  model = Mask2FormerForUniversalSegmentation.from_pretrained("{save_dir}")')
+
+    tee.close()
+    print(f"\nTraining log saved to: {log_dir}/train.log")
 
 
 if __name__ == "__main__":

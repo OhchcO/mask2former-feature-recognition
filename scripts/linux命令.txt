@@ -3,7 +3,7 @@ ubuntu
     sudo apt update
     sudo apt install screen -y   #安装
     screen --version    #验证
-    creen -S train  #新建会话
+    screen -S train  #新建会话
     python your_train_script.py #运行代码
     # 快捷键：Ctrl+A → 松开 → 按 D 退出会话
     screen -r train #恢复会话

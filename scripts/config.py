@@ -17,32 +17,38 @@ if os.name == "nt":
     VAL_IMAGE_DIR = f"{DATA_ROOT}/val_encoded_views"
     VAL_MASK_DIR = f"{DATA_ROOT}/val_masks"
     INSTANCE_CLASS_MAP_PATH = f"{DATA_ROOT}/class_map.json"
+    VAL_CLASS_MAP_PATH = f"{DATA_ROOT}/class_map.json"
     MODEL_DIR = r"E:\soft\code\Mask2former"
     SAVE_DIR = r"E:\soft\code\Mask2former_data\results\models\finetuned_instance_model_v623"
     LOG_DIR = r"E:\soft\code\Mask2former_data\results\tensorboard_logs_ins_v623"
 else:
     # Linux
-    DATA_ROOT = os.path.join(HOME, "mask2former_data", "data_24")
-    TRAIN_IMAGE_DIR = os.path.join(DATA_ROOT, "semantic_views_train")
-    TRAIN_MASK_DIR = os.path.join(DATA_ROOT, "masks_train")
-    VAL_IMAGE_DIR = os.path.join(DATA_ROOT, "semantic_views_val")
-    VAL_MASK_DIR = os.path.join(DATA_ROOT, "masks_val")
-    INSTANCE_CLASS_MAP_PATH = os.path.join(DATA_ROOT, "class_map_train.json")
+    DATA_ROOT = os.path.join(HOME, "mask2former_data", "split_dataset")
+    TRAIN_IMAGE_DIR = os.path.join(DATA_ROOT, "train", "encoded_views")
+    TRAIN_MASK_DIR = os.path.join(DATA_ROOT, "train", "masks")
+    VAL_IMAGE_DIR = os.path.join(DATA_ROOT, "val", "encoded_views")
+    VAL_MASK_DIR = os.path.join(DATA_ROOT, "val", "masks")
+    INSTANCE_CLASS_MAP_PATH = os.path.join(DATA_ROOT, "train", "class_map.json")
+    VAL_CLASS_MAP_PATH = os.path.join(DATA_ROOT, "val", "class_map.json")
     MODEL_DIR = os.path.join(HOME, "mask2former", "mask2former-feature-recognition")
-    SAVE_DIR = os.path.join(HOME, "mask2former_data", "results", "models", "finetuned_instance_model_v61024_y")
-    LOG_DIR = os.path.join(HOME, "mask2former_data", "results", "tensorboard_logs_ins_v61024_y")
+    SAVE_DIR = os.path.join(HOME, "mask2former_data", "results", "models", "finetuned_instance_model_split")
+    LOG_DIR = os.path.join(HOME, "mask2former_data", "results", "tensorboard_logs_ins_split")
 
 # ============================================================
 # 类别配置（换数据集只改这里）
 # ============================================================
-NUM_CLASSES = 3  # 不含背景（背景=0 自动处理）
+NUM_CLASSES = 4  # 不含背景（背景=0 自动处理）
 
-# 类别名称（索引 → 名称，从0开始，不含背景）
+# 类别名称（索引 → 名称）
 CLASS_NAMES = {
-    0: "开放型腔",
-    1: "封闭型腔",
-    2: "复合型腔",
+    0: "宽体槽",
+    1: "封闭槽",
+    2: "开放槽",
+    3: "孔",
 }
+
+# 原始 class ID → 连续索引的显式映射（换数据集时修改这里）
+CLASS_ID_MAP = {1: 0, 2: 1, 3: 2, 4: 3}
 
 # 类别权重（从 class_map.json 自动计算，Median Frequency Balancing）
 def _calculate_class_weights(class_map_path, num_classes):
@@ -57,18 +63,14 @@ def _calculate_class_weights(class_map_path, num_classes):
     with open(class_map_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    # 收集所有出现的类别ID，映射到连续范围
-    all_class_ids = set()
-    for img_name, instances in data.items():
-        all_class_ids.update(instances.values())
-    sorted_classes = sorted(all_class_ids)
-    class_to_idx = {cid: idx for idx, cid in enumerate(sorted_classes)}
-
+    # 使用显式映射收集计数
     class_counts = np.zeros(num_classes)
     for img_name, instances in data.items():
         for instance_id, class_id in instances.items():
-            if class_id in class_to_idx:
-                class_counts[class_to_idx[class_id]] += 1
+            if class_id in CLASS_ID_MAP:
+                idx = CLASS_ID_MAP[class_id]
+                if 0 <= idx < num_classes:
+                    class_counts[idx] += 1
 
     total = class_counts.sum()
     if total == 0:
