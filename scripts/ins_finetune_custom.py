@@ -472,9 +472,7 @@ def finetune():
 
     # Step 3: 配置训练参数
     print("\n[Step 3/6] Configuring training parameters...")
-    for param in model.model.pixel_level_module.encoder.parameters():
-        param.requires_grad = False
-
+    # 全量微调：不冻结任何参数（encoder + decoder + 分类头全部参与训练）
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Trainable parameters: {trainable_params:,} / {total_params:,} ({100 * trainable_params / total_params:.2f}%)")

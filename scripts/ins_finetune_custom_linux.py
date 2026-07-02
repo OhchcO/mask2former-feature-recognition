@@ -9,7 +9,6 @@ from config import (  # type: ignore
     INSTANCE_CLASS_MAP_PATH, VAL_CLASS_MAP_PATH, MODEL_DIR, SAVE_DIR, LOG_DIR,
     BATCH_SIZE, LEARNING_RATE, NUM_EPOCHS, PATIENCE, WEIGHT_DECAY, SEED, CLASS_ID_MAP,
 )
-
 import torch
 import random
 from torch.utils.data import Dataset, DataLoader
@@ -472,9 +471,7 @@ def finetune():
 
     # Step 3: 配置训练参数
     print("\n[Step 3/6] Configuring training parameters...")
-    for param in model.model.pixel_level_module.encoder.parameters():
-        param.requires_grad = False
-
+    # 全量微调：不冻结任何参数（encoder + decoder + 分类头全部参与训练）
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Trainable parameters: {trainable_params:,} / {total_params:,} ({100 * trainable_params / total_params:.2f}%)")
@@ -536,6 +533,7 @@ def finetune():
                 mask_labels=mask_labels_device,
                 class_labels=class_labels_device
             )
+
             loss = outputs.loss
 
             optimizer.zero_grad()
