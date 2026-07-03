@@ -615,12 +615,26 @@ def finetune():
             os.makedirs(best_save_dir, exist_ok=True)
             model.save_pretrained(best_save_dir)
             processor.save_pretrained(best_save_dir)
-            print(f"  -> New best mAP@0.5: {best_mAP:.4f}, model saved")
+            print(f"  -> New best mAP@0.5: {best_mAP:.4f}, best model saved")
         else:
             no_improve_epochs += 1
             if no_improve_epochs >= PATIENCE:
                 print(f"\n  Early stopping: mAP not improved for {PATIENCE} epochs")
                 break
+
+        # 每个 epoch 结束保存最新权重（防止中途崩溃丢失进度）
+        latest_save_dir = os.path.join(save_dir, "latest_model")
+        os.makedirs(latest_save_dir, exist_ok=True)
+        model.save_pretrained(latest_save_dir)
+        processor.save_pretrained(latest_save_dir)
+
+        # 每 30 轮保存一个 checkpoint
+        if (epoch + 1) % 30 == 0:
+            ckpt_save_dir = os.path.join(save_dir, f"checkpoint_epoch{epoch + 1}")
+            os.makedirs(ckpt_save_dir, exist_ok=True)
+            model.save_pretrained(ckpt_save_dir)
+            processor.save_pretrained(ckpt_save_dir)
+            print(f"  -> Checkpoint saved: epoch {epoch + 1}")
 
     total_time = time.time() - start_time
 
@@ -638,7 +652,8 @@ def finetune():
     print(f"Total time: {total_time:.1f}s ({total_time/60:.1f} min)")
     print(f"Best loss: {best_loss:.4f}")
     print(f"Best mAP@0.5: {best_mAP:.4f}")
-    print(f"Model saved to: {save_dir}")
+    print(f"Best model: {os.path.join(save_dir, 'best_model')}")
+    print(f"Latest model: {os.path.join(save_dir, 'latest_model')}")
 
     print("\n" + "=" * 60)
     print("Training History")
@@ -678,8 +693,14 @@ def finetune():
     print("=" * 60)
 
     print("\nUsage:")
-    print(f'  processor = Mask2FormerImageProcessor.from_pretrained("{save_dir}")')
-    print(f'  model = Mask2FormerForUniversalSegmentation.from_pretrained("{save_dir}")')
+    best_path = os.path.join(save_dir, "best_model")
+    latest_path = os.path.join(save_dir, "latest_model")
+    print(f'  # 加载最佳模型:')
+    print(f'  processor = Mask2FormerImageProcessor.from_pretrained("{best_path}")')
+    print(f'  model = Mask2FormerForUniversalSegmentation.from_pretrained("{best_path}")')
+    print(f'  # 或加载最新模型:')
+    print(f'  processor = Mask2FormerImageProcessor.from_pretrained("{latest_path}")')
+    print(f'  model = Mask2FormerForUniversalSegmentation.from_pretrained("{latest_path}")')
 
     tee.close()
     print(f"\nTraining log saved to: {log_dir}/train.log")

@@ -11,16 +11,16 @@ HOME = os.path.expanduser("~")
 
 if os.name == "nt":
     # Windows
-    DATA_ROOT = r"E:\soft\code\Mask2former_data\test-instance-0623"
-    TRAIN_IMAGE_DIR = f"{DATA_ROOT}/train_encoded_views"
-    TRAIN_MASK_DIR = f"{DATA_ROOT}/train_masks"
-    VAL_IMAGE_DIR = f"{DATA_ROOT}/val_encoded_views"
-    VAL_MASK_DIR = f"{DATA_ROOT}/val_masks"
-    INSTANCE_CLASS_MAP_PATH = f"{DATA_ROOT}/class_map.json"
-    VAL_CLASS_MAP_PATH = f"{DATA_ROOT}/class_map.json"
+    DATA_ROOT = r"D:\Code\AAGNet\test_datasets\balanced_dataset"
+    TRAIN_IMAGE_DIR = f"{DATA_ROOT}/train/encoded_views"
+    TRAIN_MASK_DIR = f"{DATA_ROOT}/train/masks"
+    VAL_IMAGE_DIR = f"{DATA_ROOT}/val/encoded_views"
+    VAL_MASK_DIR = f"{DATA_ROOT}/val/masks"
+    INSTANCE_CLASS_MAP_PATH = f"{DATA_ROOT}/train/class_map.json"
+    VAL_CLASS_MAP_PATH = f"{DATA_ROOT}/val/class_map.json"
     MODEL_DIR = r"E:\soft\code\Mask2former"
-    SAVE_DIR = r"E:\soft\code\Mask2former_data\results\models\finetuned_instance_model_v623"
-    LOG_DIR = r"E:\soft\code\Mask2former_data\results\tensorboard_logs_ins_v623"
+    SAVE_DIR = r"E:\soft\code\Mask2former_data\results\models\finetuned_instance_model_balanced"
+    LOG_DIR = r"E:\soft\code\Mask2former_data\results\tensorboard_logs_ins_balanced"
 else:
     # Linux
     DATA_ROOT = os.path.join(HOME, "mask2former_data", "split_dataset")
@@ -37,18 +37,22 @@ else:
 # ============================================================
 # 类别配置（换数据集只改这里）
 # ============================================================
-NUM_CLASSES = 4  # 不含背景（背景=0 自动处理）
+NUM_CLASSES = 7  # 不含背景（背景=0 自动处理）
 
 # 类别名称（索引 → 名称）
 CLASS_NAMES = {
-    0: "宽体槽",
-    1: "封闭槽",
-    2: "开放槽",
-    3: "孔",
+    0: "hole",
+    1: "closed_pocket",
+    2: "closed_slot",
+    3: "open_pocket",
+    4: "open_slot",
+    5: "wide_slot",
+    6: "oring_slot",
 }
 
 # 原始 class ID → 连续索引的显式映射（换数据集时修改这里）
-CLASS_ID_MAP = {1: 0, 2: 1, 3: 2, 4: 3}
+# 新数据集标签已为 0-6 连续编号，使用恒等映射
+CLASS_ID_MAP = {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6}
 
 # 类别权重（从 class_map.json 自动计算，Median Frequency Balancing）
 def _calculate_class_weights(class_map_path, num_classes):
@@ -99,7 +103,7 @@ LEARNING_RATE = 5e-5
 NUM_EPOCHS = 30
 IMG_SIZE = (1024, 1024)
 WEIGHT_DECAY = 0.01
-PATIENCE = 10  # 早停耐心值：mAP连续不提升则停止
+PATIENCE = 20  # 早停耐心值：mAP连续不提升则停止
 WARMUP_RATIO = 0.1
 VAL_SPLIT = 0.2
 SEED = 42
