@@ -1,4 +1,4 @@
-# 实例分割训练
+# 实例分割训练 (Linux版)
 # 输入：图片 + 实例掩码（每个实例不同像素值）+ class_map.json
 import sys
 import os
@@ -17,13 +17,14 @@ from torch.utils.tensorboard import SummaryWriter
 from transformers import Mask2FormerForUniversalSegmentation, Mask2FormerImageProcessor
 from PIL import Image
 import json
+import pickle
 import numpy as np
 import time
 from datetime import datetime
 from tqdm import tqdm
 
 # 调试开关：True 时只取前12个样本快速验证，False 使用全量数据
-DEBUG_MODE = False
+DEBUG_MODE = True
 MAX_SAMPLES = 12
 
 
@@ -43,22 +44,31 @@ class InstanceSegmentationDataset(Dataset):
         # 加载 class_map.json
         with open(class_map_path, 'r', encoding='utf-8') as f:
             self.class_map = json.load(f)
-        print(f"Loaded class_map.json with {len(self.class_map)} images")
+        print(f"  Loaded class_map.json with {len(self.class_map)} images")
 
-        # 匹配图片和掩码
+        # 匹配图片和掩码（带缓存，避免每次启动都逐个验证）
         self.images = sorted([f for f in os.listdir(image_dir) if f.endswith('.png')])
-        valid_pairs = []
-        empty_count = 0
-        for img_name in self.images:
-            mask_path = os.path.join(mask_dir, img_name)
-            if os.path.exists(mask_path) and img_name in self.class_map:
-                mask_arr = np.array(Image.open(mask_path).convert("L"))
-                if np.any(mask_arr < 255):  # 至少有一个非背景像素
-                    valid_pairs.append(img_name)
-                else:
-                    empty_count += 1
-        self.images = valid_pairs
-        print(f"Found {len(self.images)} valid images ({empty_count} empty masks skipped)")
+        cache_path = os.path.join(image_dir, "_valid_pairs.pkl")
+        if os.path.exists(cache_path):
+            with open(cache_path, "rb") as f:
+                self.images = pickle.load(f)
+            print(f"  Loaded {len(self.images)} valid images from cache (instant)")
+        else:
+            valid_pairs = []
+            empty_count = 0
+            print(f"  Validating {len(self.images)} masks (first run, will cache)...")
+            for img_name in tqdm(self.images, desc="  Validating masks", unit="img"):
+                mask_path = os.path.join(mask_dir, img_name)
+                if os.path.exists(mask_path) and img_name in self.class_map:
+                    mask_arr = np.array(Image.open(mask_path).convert("L"))
+                    if np.any(mask_arr < 255):
+                        valid_pairs.append(img_name)
+                    else:
+                        empty_count += 1
+            self.images = valid_pairs
+            with open(cache_path, "wb") as f:
+                pickle.dump(valid_pairs, f)
+            print(f"  Found {len(self.images)} valid images ({empty_count} empty masks skipped), cached to {cache_path}")
 
         # 使用 config 中定义的显式映射
         self.class_to_idx = CLASS_ID_MAP
@@ -117,14 +127,18 @@ class InstanceSegmentationDataset(Dataset):
 
 
 def collate_fn(batch):
+    # 过滤掉空标签的样本（防止 cost matrix infeasible）
+    valid_batch = [s for s in batch if len(s[1]) > 0]
+    if len(valid_batch) == 0:
+        return None
     batch_inputs = {
-        key: torch.stack([sample[0][key] for sample in batch])
-        for key in batch[0][0].keys()
+        key: torch.stack([sample[0][key] for sample in valid_batch])
+        for key in valid_batch[0][0].keys()
     }
     # 每个样本的实例数量可能不同，不能直接stack，需要列表
-    batch_mask_labels = [sample[1] for sample in batch]
-    batch_class_labels = [sample[2] for sample in batch]
-    batch_img_names = [sample[3] for sample in batch]
+    batch_mask_labels = [sample[1] for sample in valid_batch]
+    batch_class_labels = [sample[2] for sample in valid_batch]
+    batch_img_names = [sample[3] for sample in valid_batch]
     return batch_inputs, batch_mask_labels, batch_class_labels, batch_img_names
 
 
@@ -181,7 +195,12 @@ def evaluate_model(model, processor, dataloader, device, num_classes, iou_thresh
             h, w = mask_labels[0].shape[1], mask_labels[0].shape[2]
             target_sizes = [(h, w)] * batch_size
 
-            outputs = model(**inputs)
+            try:
+                outputs = model(**inputs)
+            except ValueError as e:
+                if "infeasible" in str(e):
+                    continue
+                raise
             pred_results = processor.post_process_instance_segmentation(
                 outputs, target_sizes=target_sizes, threshold=0.5
             )
@@ -401,6 +420,7 @@ def finetune():
     print(f"Set num_labels to {NUM_CLASSES}")
 
     device = get_device()
+    model = model.to(device)
 
     # 设置类别权重（传给 nn.CrossEntropyLoss 的 weight 参数）
     # empty_weight 形状: [num_classes + 1]，最后一个是 no-object 权重
@@ -411,8 +431,6 @@ def finetune():
         model.criterion.empty_weight = full_weights.to(device)
         # print(f"Set per-class weights: {CLASS_WEIGHTS}")
         print(f"Full criterion weights (with no-object): {model.criterion.empty_weight.tolist()}")
-
-    model = model.to(device)
 
     # Step 2: 加载数据
     print("\n[Step 2/6] Preparing data...")
@@ -465,7 +483,7 @@ def finetune():
             val_dataset,
             batch_size=BATCH_SIZE,
             shuffle=False,
-            num_workers=0,
+            num_workers=4,
             pin_memory=True if device.type == "cuda" else False,
             collate_fn=collate_fn,
         )
@@ -494,6 +512,7 @@ def finetune():
     print(f"  Image size: 1024x1024")
     print(f"  Number of classes: {NUM_CLASSES}")
     print(f"  Device: {device}")
+    print(f"  FP32 Full Precision")
     print(f"  Training samples: {len(train_dataset)}")
     if val_dataset:
         print(f"  Validation samples: {len(val_dataset)}")
@@ -517,6 +536,7 @@ def finetune():
     no_improve_epochs = 0
     training_history = []
     start_time = time.time()
+    global_step = 0
 
     for epoch in range(NUM_EPOCHS):
         model.train()
@@ -524,17 +544,27 @@ def finetune():
         epoch_start_time = time.time()
 
         pbar = tqdm(train_loader, desc=f"Epoch [{epoch+1}/{NUM_EPOCHS}]", leave=False)
-        for batch_idx, (inputs, mask_labels, class_labels, _) in enumerate(pbar):
+        for batch_idx, batch in enumerate(pbar):
+            if batch is None:
+                continue
+            inputs, mask_labels, class_labels, _ = batch
             inputs = {k: v.to(device) for k, v in inputs.items()}
             mask_labels_device = [m.to(device) for m in mask_labels]
             class_labels_device = [c.to(device) for c in class_labels]
 
-            outputs = model(
-                pixel_values=inputs["pixel_values"],
-                mask_labels=mask_labels_device,
-                class_labels=class_labels_device
-            )
-            loss = outputs.loss
+            try:
+                outputs = model(
+                    pixel_values=inputs["pixel_values"],
+                    mask_labels=mask_labels_device,
+                    class_labels=class_labels_device
+                )
+                loss = outputs.loss
+            except ValueError as e:
+                if "infeasible" in str(e):
+                    print(f"  [Skip] Cost matrix infeasible at batch {batch_idx}, skipping...")
+                    optimizer.zero_grad()
+                    continue
+                raise
 
             optimizer.zero_grad()
             loss.backward()
@@ -542,6 +572,10 @@ def finetune():
             optimizer.step()
 
             total_loss += loss.item()
+            global_step += 1
+            # 每 100 步记录一次 train loss 到 TensorBoard
+            if global_step % 100 == 0:
+                writer.add_scalar('Loss/train_iter', loss.item(), global_step)
             pbar.set_postfix(loss=f"{loss.item():.4f}", lr=f"{optimizer.param_groups[0]['lr']:.2e}")
 
         scheduler.step()
@@ -555,28 +589,39 @@ def finetune():
 
         if val_loader:
             print(f"\n  Running validation...")
-            # 计算验证损失
+            # 计算验证损失（每 epoch）
             model.eval()
             val_total_loss = 0
+            val_batch_count = 0
             with torch.no_grad():
-                for v_inputs, v_mask_labels, v_class_labels, _ in val_loader:
+                for v_idx, (v_inputs, v_mask_labels, v_class_labels, _) in enumerate(val_loader):
                     v_inputs = {k: v.to(device) for k, v in v_inputs.items()}
                     v_mask_device = [m.to(device) for m in v_mask_labels]
                     v_class_device = [c.to(device) for c in v_class_labels]
-                    v_outputs = model(
-                        pixel_values=v_inputs["pixel_values"],
-                        mask_labels=v_mask_device,
-                        class_labels=v_class_device
-                    )
+                    try:
+                        v_outputs = model(
+                            pixel_values=v_inputs["pixel_values"],
+                            mask_labels=v_mask_device,
+                            class_labels=v_class_device
+                        )
+                    except ValueError as e:
+                        if "infeasible" in str(e):
+                            print(f"  [Skip Val] Cost matrix infeasible at batch {v_idx}, skipping...")
+                            continue
+                        raise
                     val_total_loss += v_outputs.loss.item()
-            val_loss = val_total_loss / len(val_loader)
+                    val_batch_count += 1
+            val_loss = val_total_loss / max(val_batch_count, 1)
             model.train()
 
-            # 计算 mAP
-            val_mAP, val_ap_per_class = evaluate_model(
-                model, processor, val_loader, device, NUM_CLASSES
-            )
-            print(f"  Validation - Loss: {val_loss:.4f}, mAP@0.5: {val_mAP:.4f}")
+            # 完整 mAP 评估（每 5 epoch）
+            if (epoch + 1) % 5 == 0:
+                val_mAP, val_ap_per_class = evaluate_model(
+                    model, processor, val_loader, device, NUM_CLASSES
+                )
+                print(f"  Validation - Loss: {val_loss:.4f}, mAP@0.5: {val_mAP:.4f}")
+            else:
+                print(f"  Validation - Loss: {val_loss:.4f} (mAP next epoch {(5 - (epoch + 1) % 5)} epoch(s))")
 
         training_history.append({
             'epoch': epoch + 1,
@@ -588,18 +633,18 @@ def finetune():
             'time': epoch_time
         })
 
-        # TensorBoard记录
-        writer.add_scalar('Loss/train', avg_train_loss, epoch + 1)
+        # TensorBoard记录（全部按 iteration 记录）
+        writer.add_scalar('Loss/train_epoch', avg_train_loss, global_step)
         if val_loss is not None:
-            writer.add_scalar('Loss/val', val_loss, epoch + 1)
-        writer.add_scalar('LR', current_lr, epoch + 1)
+            writer.add_scalar('Loss/val', val_loss, global_step)
+        writer.add_scalar('LR', current_lr, global_step)
         if val_mAP is not None:
-            writer.add_scalar('mAP/val', val_mAP, epoch + 1)
+            writer.add_scalar('mAP/val', val_mAP, global_step)
         if val_ap_per_class is not None:
             for idx, cls_id in enumerate(range(NUM_CLASSES)):
                 cls_name = CLASS_NAMES[cls_id]
                 if not np.isnan(val_ap_per_class[idx]):
-                    writer.add_scalar(f'AP_per_class/{cls_name}', val_ap_per_class[idx], epoch + 1)
+                    writer.add_scalar(f'AP_per_class/{cls_name}', val_ap_per_class[idx], global_step)
 
         print(f"Epoch [{epoch+1}/{NUM_EPOCHS}] completed, Train Loss: {avg_train_loss:.4f}, LR: {current_lr:.2e}, Time: {epoch_time:.1f}s")
 

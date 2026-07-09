@@ -88,8 +88,8 @@ def _calculate_class_weights(class_map_path, num_classes):
     weights[present] = median_freq / class_pct[present]
     weights = weights / weights[present].sum() * present.sum()
 
-    print(f"Class weights (from {len(data)} images, {int(total)} instances): "
-          f"{[round(w, 4) for w in weights.tolist()]}")
+    # print(f"Class weights (from {len(data)} images, {int(total)} instances): "
+    #       f"{[round(w, 4) for w in weights.tolist()]}")
     return weights.tolist()
 
 
@@ -98,7 +98,7 @@ CLASS_WEIGHTS = _calculate_class_weights(INSTANCE_CLASS_MAP_PATH, NUM_CLASSES)
 # ============================================================
 # 训练超参
 # ============================================================
-BATCH_SIZE = 4
+BATCH_SIZE = 1
 LEARNING_RATE = 5e-5
 NUM_EPOCHS = 30
 IMG_SIZE = (1024, 1024)
